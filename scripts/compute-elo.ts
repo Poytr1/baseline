@@ -55,10 +55,14 @@ async function main(): Promise<void> {
   // Fetch all matches ordered by tournament date, then match_num
   console.log("Fetching all matches (ordered by tournament date, match_num)...");
   const matches = await prisma.match.findMany({
-    include: {
-      tournament: {
-        select: { date: true },
-      },
+    select: {
+      tourneyId: true,
+      matchNum: true,
+      winnerId: true,
+      loserId: true,
+      surface: true,
+      tour: true,
+      tournament: { select: { date: true } },
     },
     orderBy: [
       { tournament: { date: "asc" } },
