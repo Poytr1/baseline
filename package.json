@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "sync": "npx tsx scripts/sync-sackmann.ts"
+    "sync": "npx tsx scripts/sync-sackmann.ts",
+    "compute-elo": "npx tsx scripts/compute-elo.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",
