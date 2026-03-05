@@ -41,6 +41,7 @@ function floatOrNull(val: string | undefined): number | null {
 /** Apply the WTA offset when tour is "wta" so player IDs are unique. */
 function resolvePlayerId(rawId: string | number, tour: string): number {
   const base = typeof rawId === "string" ? parseInt(rawId, 10) : rawId;
+  if (Number.isNaN(base)) return -1; // sentinel for filtering
   return tour === "wta" ? base + WTA_PLAYER_ID_OFFSET : base;
 }
 
@@ -61,6 +62,12 @@ async function fetchCsv<T>(url: string): Promise<T[]> {
     skipEmptyLines: true,
     dynamicTyping: false, // we handle conversions ourselves
   });
+  if (parsed.errors.length > 0) {
+    console.warn(`  [CSV WARN] ${url}: ${parsed.errors.length} parse errors`);
+    for (const err of parsed.errors.slice(0, 5)) {
+      console.warn(`    row ${err.row}: ${err.message}`);
+    }
+  }
   return parsed.data;
 }
 
@@ -91,7 +98,8 @@ async function syncPlayers(tour: "atp" | "wta"): Promise<void> {
 
   for (let i = 0; i < rows.length; i += BATCH) {
     const batch = rows.slice(i, i + BATCH);
-    const ops = batch.map((r) => {
+    const valid = batch.filter((r) => resolvePlayerId(r.player_id, tour) !== -1);
+    const ops = valid.map((r) => {
       const id = resolvePlayerId(r.player_id, tour);
       const nameFirst = (r.name_first ?? "").trim();
       const nameLast = (r.name_last ?? "").trim();
@@ -252,7 +260,13 @@ async function syncMatchesForYear(
 
   for (let i = 0; i < rows.length; i += BATCH) {
     const batch = rows.slice(i, i + BATCH);
-    const ops = batch.map((r) => {
+    const valid = batch.filter((r) => {
+      const wId = resolvePlayerId(r.winner_id, tour);
+      const lId = resolvePlayerId(r.loser_id, tour);
+      const mn = parseInt(r.match_num, 10);
+      return wId !== -1 && lId !== -1 && !Number.isNaN(mn);
+    });
+    const ops = valid.map((r) => {
       const tourneyId = resolveTourneyId(r.tourney_id, tour);
       const matchNum = parseInt(r.match_num, 10);
       const winnerId = resolvePlayerId(r.winner_id, tour);
