@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Player {
+  id         Int      @id
+  nameFirst  String   @map("name_first")
+  nameLast   String   @map("name_last")
+  hand       String?
+  dob        String?
+  ioc        String?
+  height     Int?
+  wikidataId String?  @map("wikidata_id")
+  tour       String   // "atp" or "wta"
+  slug       String   @unique
+
+  wonMatches  Match[] @relation("MatchWinner")
+  lostMatches Match[] @relation("MatchLoser")
+  rankings    Ranking[]
+  eloRatings  EloRating[]
+
+  @@map("players")
+}
+
+model Tournament {
+  id        String  @id // e.g. "2024-0339"
+  name      String
+  surface   String?
+  drawSize  Int?    @map("draw_size")
+  level     String?
+  date      String  // YYYYMMDD
+  tour      String  // "atp" or "wta"
+
+  matches   Match[]
+
+  @@map("tournaments")
+}
+
+model Match {
+  id           Int     @id @default(autoincrement())
+  tourneyId    String  @map("tourney_id")
+  matchNum     Int     @map("match_num")
+  winnerId     Int     @map("winner_id")
+  loserId      Int     @map("loser_id")
+  score        String?
+  bestOf       Int?    @map("best_of")
+  round        String?
+  minutes      Int?
+  surface      String?
+  tour         String  // "atp" or "wta"
+
+  // Winner stats
+  wAce     Int? @map("w_ace")
+  wDf      Int? @map("w_df")
+  wSvpt    Int? @map("w_svpt")
+  w1stIn   Int? @map("w_1st_in")
+  w1stWon  Int? @map("w_1st_won")
+  w2ndWon  Int? @map("w_2nd_won")
+  wSvGms   Int? @map("w_sv_gms")
+  wBpSaved Int? @map("w_bp_saved")
+  wBpFaced Int? @map("w_bp_faced")
+
+  // Loser stats
+  lAce     Int? @map("l_ace")
+  lDf      Int? @map("l_df")
+  lSvpt    Int? @map("l_svpt")
+  l1stIn   Int? @map("l_1st_in")
+  l1stWon  Int? @map("l_1st_won")
+  l2ndWon  Int? @map("l_2nd_won")
+  lSvGms   Int? @map("l_sv_gms")
+  lBpSaved Int? @map("l_bp_saved")
+  lBpFaced Int? @map("l_bp_faced")
+
+  // Rankings at time of match
+  winnerRank       Int? @map("winner_rank")
+  winnerRankPoints Int? @map("winner_rank_points")
+  loserRank        Int? @map("loser_rank")
+  loserRankPoints  Int? @map("loser_rank_points")
+
+  // Winner/Loser metadata at match time
+  winnerAge Float? @map("winner_age")
+  loserAge  Float? @map("loser_age")
+
+  tournament Tournament @relation(fields: [tourneyId], references: [id])
+  winner     Player     @relation("MatchWinner", fields: [winnerId], references: [id])
+  loser      Player     @relation("MatchLoser", fields: [loserId], references: [id])
+
+  @@unique([tourneyId, matchNum])
+  @@index([winnerId])
+  @@index([loserId])
+  @@index([surface])
+  @@index([tour])
+  @@map("matches")
+}
+
+model Ranking {
+  id       Int    @id @default(autoincrement())
+  date     String // YYYYMMDD
+  rank     Int
+  playerId Int    @map("player_id")
+  points   Int?
+  tour     String // "atp" or "wta"
+
+  player Player @relation(fields: [playerId], references: [id])
+
+  @@unique([date, playerId, tour])
+  @@index([playerId])
+  @@index([date])
+  @@map("rankings")
+}
+
+model EloRating {
+  id        Int    @id @default(autoincrement())
+  playerId  Int    @map("player_id")
+  date      String // YYYYMMDD
+  overall   Float
+  hard      Float?
+  clay      Float?
+  grass     Float?
+  tour      String // "atp" or "wta"
+
+  player Player @relation(fields: [playerId], references: [id])
+
+  @@unique([playerId, date, tour])
+  @@index([playerId])
+  @@index([date])
+  @@index([overall])
+  @@map("elo_ratings")
+}
