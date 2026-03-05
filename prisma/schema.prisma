@@ -24,6 +24,7 @@ model Player {
   rankings    Ranking[]
   eloRatings  EloRating[]
 
+  @@index([tour])
   @@map("players")
 }
 
@@ -38,6 +39,7 @@ model Tournament {
 
   matches Match[]
 
+  @@index([tour])
   @@map("tournaments")
 }
 
