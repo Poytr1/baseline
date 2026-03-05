@@ -8,19 +8,19 @@ datasource db {
 }
 
 model Player {
-  id         Int      @id
-  nameFirst  String   @map("name_first")
-  nameLast   String   @map("name_last")
+  id         Int     @id
+  nameFirst  String  @map("name_first")
+  nameLast   String  @map("name_last")
   hand       String?
   dob        String?
   ioc        String?
   height     Int?
-  wikidataId String?  @map("wikidata_id")
-  tour       String   // "atp" or "wta"
-  slug       String   @unique
+  wikidataId String? @map("wikidata_id")
+  tour       String // "atp" or "wta"
+  slug       String  @unique
 
-  wonMatches  Match[] @relation("MatchWinner")
-  lostMatches Match[] @relation("MatchLoser")
+  wonMatches  Match[]     @relation("MatchWinner")
+  lostMatches Match[]     @relation("MatchLoser")
   rankings    Ranking[]
   eloRatings  EloRating[]
 
@@ -28,31 +28,31 @@ model Player {
 }
 
 model Tournament {
-  id        String  @id // e.g. "2024-0339"
-  name      String
-  surface   String?
-  drawSize  Int?    @map("draw_size")
-  level     String?
-  date      String  // YYYYMMDD
-  tour      String  // "atp" or "wta"
+  id       String  @id // e.g. "2024-0339"
+  name     String
+  surface  String?
+  drawSize Int?    @map("draw_size")
+  level    String?
+  date     String // YYYYMMDD
+  tour     String // "atp" or "wta"
 
-  matches   Match[]
+  matches Match[]
 
   @@map("tournaments")
 }
 
 model Match {
-  id           Int     @id @default(autoincrement())
-  tourneyId    String  @map("tourney_id")
-  matchNum     Int     @map("match_num")
-  winnerId     Int     @map("winner_id")
-  loserId      Int     @map("loser_id")
-  score        String?
-  bestOf       Int?    @map("best_of")
-  round        String?
-  minutes      Int?
-  surface      String?
-  tour         String  // "atp" or "wta"
+  id        Int     @id @default(autoincrement())
+  tourneyId String  @map("tourney_id")
+  matchNum  Int     @map("match_num")
+  winnerId  Int     @map("winner_id")
+  loserId   Int     @map("loser_id")
+  score     String?
+  bestOf    Int?    @map("best_of")
+  round     String?
+  minutes   Int?
+  surface   String?
+  tour      String // "atp" or "wta"
 
   // Winner stats
   wAce     Int? @map("w_ace")
@@ -115,14 +115,14 @@ model Ranking {
 }
 
 model EloRating {
-  id        Int    @id @default(autoincrement())
-  playerId  Int    @map("player_id")
-  date      String // YYYYMMDD
-  overall   Float
-  hard      Float?
-  clay      Float?
-  grass     Float?
-  tour      String // "atp" or "wta"
+  id       Int    @id @default(autoincrement())
+  playerId Int    @map("player_id")
+  date     String // YYYYMMDD
+  overall  Float
+  hard     Float?
+  clay     Float?
+  grass    Float?
+  tour     String // "atp" or "wta"
 
   player Player @relation(fields: [playerId], references: [id])
 
