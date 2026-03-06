@@ -99,6 +99,8 @@ export function Navbar() {
             variant="ghost"
             size="icon"
             className="md:hidden"
+            aria-expanded={mobileOpen}
+            aria-controls="mobile-nav"
             onClick={() => setMobileOpen((prev) => !prev)}
           >
             <Menu className="size-4" />
@@ -109,7 +111,7 @@ export function Navbar() {
 
       {/* Mobile nav */}
       {mobileOpen && (
-        <nav className="border-t px-4 pb-3 md:hidden">
+        <nav id="mobile-nav" className="border-t px-4 pb-3 md:hidden">
           {navLinks.map((link) => (
             <Link
               key={link.href}
