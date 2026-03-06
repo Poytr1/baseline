@@ -50,25 +50,38 @@ function resolveTourneyId(rawId: string, tour: string): string {
   return `${tour}-${rawId}`;
 }
 
-async function fetchCsv<T>(url: string): Promise<T[]> {
-  const res = await fetch(url);
-  if (!res.ok) {
-    console.warn(`  [SKIP] ${url} → ${res.status}`);
-    return [];
-  }
-  const text = await res.text();
-  const parsed = Papa.parse<T>(text, {
-    header: true,
-    skipEmptyLines: true,
-    dynamicTyping: false, // we handle conversions ourselves
-  });
-  if (parsed.errors.length > 0) {
-    console.warn(`  [CSV WARN] ${url}: ${parsed.errors.length} parse errors`);
-    for (const err of parsed.errors.slice(0, 5)) {
-      console.warn(`    row ${err.row}: ${err.message}`);
+async function fetchCsv<T>(url: string, retries = 3): Promise<T[]> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) {
+        console.warn(`  [SKIP] ${url} → ${res.status}`);
+        return [];
+      }
+      const text = await res.text();
+      const parsed = Papa.parse<T>(text, {
+        header: true,
+        skipEmptyLines: true,
+        dynamicTyping: false,
+      });
+      if (parsed.errors.length > 0) {
+        console.warn(`  [CSV WARN] ${url}: ${parsed.errors.length} parse errors`);
+        for (const err of parsed.errors.slice(0, 5)) {
+          console.warn(`    row ${err.row}: ${err.message}`);
+        }
+      }
+      return parsed.data;
+    } catch (err) {
+      lastError = err;
+      console.warn(`  [RETRY ${attempt}/${retries}] ${url}: ${err instanceof Error ? err.message : err}`);
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 2000 * attempt));
+      }
     }
   }
-  return parsed.data;
+  console.error(`  [FAIL] ${url} after ${retries} attempts:`, lastError);
+  return [];
 }
 
 // ── Players ────────────────────────────────────────────────────────────
