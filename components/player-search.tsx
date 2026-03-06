@@ -40,13 +40,13 @@ export function PlayerSearch({ open, setOpen }: PlayerSearchProps) {
     const down = (e: KeyboardEvent) => {
       if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        setOpen(!open);
+        setOpen((prev) => !prev);
       }
     };
 
     document.addEventListener("keydown", down);
     return () => document.removeEventListener("keydown", down);
-  }, [open, setOpen]);
+  }, [setOpen]);
 
   // Debounced search
   React.useEffect(() => {
