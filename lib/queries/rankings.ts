@@ -18,73 +18,60 @@ export interface SparklinePoint {
 }
 
 /**
- * Fetch latest Elo ratings for all players on a given tour, sorted descending.
- * For surface filtering, returns the surface-specific Elo instead of overall.
- * "Latest" means the most recent date in the elo_ratings table for that tour.
+ * Fetch current Elo ratings by getting each player's most recent snapshot.
+ * Only includes players whose latest snapshot is within the last 2 years
+ * (to filter out retired players).
  */
 export async function getEloRankings(
   tour: Tour = "atp",
   surface: Surface = "overall"
 ): Promise<RankedPlayer[]> {
-  // Find the latest date for this tour
-  const latestEntry = await prisma.eloRating.findFirst({
-    where: { tour },
-    orderBy: { date: "desc" },
-    select: { date: true },
-  });
+  const eloCol = surface === "overall" ? "overall" : surface;
 
-  if (!latestEntry) {
-    return [];
-  }
+  // Use a subquery to get each player's latest date, then join to get the Elo
+  const rows = await prisma.$queryRawUnsafe<
+    {
+      player_id: number;
+      name_first: string;
+      name_last: string;
+      slug: string;
+      ioc: string | null;
+      elo: number;
+    }[]
+  >(
+    `SELECT e.player_id, p.name_first, p.name_last, p.slug, p.ioc,
+            e.${eloCol} as elo
+     FROM elo_ratings e
+     JOIN players p ON p.id = e.player_id
+     WHERE e.tour = $1
+       AND e.date = (
+         SELECT MAX(e2.date) FROM elo_ratings e2
+         WHERE e2.player_id = e.player_id AND e2.tour = $1
+       )
+       AND CAST(e.date AS INTEGER) >= $2
+     ORDER BY e.${eloCol} DESC
+     LIMIT 500`,
+    tour,
+    // 2 years ago as YYYYMMDD integer
+    parseInt(
+      new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10)
+        .replace(/-/g, ""),
+      10
+    )
+  );
 
-  const latestDate = latestEntry.date;
-
-  // Determine which Elo column to use
-  const eloField = surface === "overall" ? "overall" : surface;
-
-  // Fetch all ratings for the latest date
-  const ratings = await prisma.eloRating.findMany({
-    where: {
-      tour,
-      date: latestDate,
-    },
-    include: {
-      player: {
-        select: {
-          id: true,
-          nameFirst: true,
-          nameLast: true,
-          slug: true,
-          ioc: true,
-        },
-      },
-    },
-    orderBy: { overall: "desc" },
-  });
-
-  // Map and filter: for surface-specific Elo, skip players whose surface Elo is null
-  const results: RankedPlayer[] = [];
-  for (const r of ratings) {
-    const eloValue = r[eloField];
-    if (eloValue === null || eloValue === undefined) continue;
-
-    results.push({
-      rank: 0, // will be assigned below
-      playerId: r.playerId,
-      playerName: `${r.player.nameFirst} ${r.player.nameLast}`,
-      slug: r.player.slug,
-      country: r.player.ioc,
-      elo: Math.round(eloValue),
-    });
-  }
-
-  // Sort by the selected Elo descending and assign ranks
-  results.sort((a, b) => b.elo - a.elo);
-  results.forEach((r, i) => {
-    r.rank = i + 1;
-  });
-
-  return results;
+  return rows
+    .filter((r) => r.elo !== null)
+    .map((r, i) => ({
+      rank: i + 1,
+      playerId: r.player_id,
+      playerName: `${r.name_first ?? ""} ${r.name_last ?? ""}`.trim(),
+      slug: r.slug,
+      country: r.ioc,
+      elo: Math.round(Number(r.elo)),
+    }));
 }
 
 /**

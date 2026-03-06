@@ -29,44 +29,46 @@ export async function getTopElo(
   limit: number = 10
 ): Promise<TopEloPlayer[]> {
   try {
-    // Find the latest date for this tour
-    const latestEntry = await prisma.eloRating.findFirst({
-      where: { tour },
-      orderBy: { date: "desc" },
-      select: { date: true },
-    });
+    // Get each player's latest Elo snapshot, filtered to active players (last 2 years)
+    const cutoff = parseInt(
+      new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10)
+        .replace(/-/g, ""),
+      10
+    );
 
-    if (!latestEntry) {
-      return [];
-    }
+    const rows = await prisma.$queryRawUnsafe<
+      {
+        name_first: string;
+        name_last: string;
+        slug: string;
+        ioc: string | null;
+        overall: number;
+      }[]
+    >(
+      `SELECT p.name_first, p.name_last, p.slug, p.ioc, e.overall
+       FROM elo_ratings e
+       JOIN players p ON p.id = e.player_id
+       WHERE e.tour = $1
+         AND e.date = (
+           SELECT MAX(e2.date) FROM elo_ratings e2
+           WHERE e2.player_id = e.player_id AND e2.tour = $1
+         )
+         AND CAST(e.date AS INTEGER) >= $2
+       ORDER BY e.overall DESC
+       LIMIT $3`,
+      tour,
+      cutoff,
+      limit
+    );
 
-    const ratings = await prisma.eloRating.findMany({
-      where: {
-        tour,
-        date: latestEntry.date,
-      },
-      include: {
-        player: {
-          select: {
-            nameFirst: true,
-            nameLast: true,
-            slug: true,
-            ioc: true,
-          },
-        },
-      },
-      orderBy: { overall: "desc" },
-      take: limit,
-    });
-
-    return ratings.map((r, i) => ({
+    return rows.map((r, i) => ({
       rank: i + 1,
-      playerName: [r.player.nameFirst, r.player.nameLast]
-        .filter(Boolean)
-        .join(" "),
-      slug: r.player.slug,
-      country: r.player.ioc,
-      elo: Math.round(r.overall),
+      playerName: [r.name_first, r.name_last].filter(Boolean).join(" "),
+      slug: r.slug,
+      country: r.ioc,
+      elo: Math.round(Number(r.overall)),
     }));
   } catch {
     // Database may be unavailable during build-time static generation
