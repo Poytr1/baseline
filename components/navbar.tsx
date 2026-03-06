@@ -12,6 +12,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { PlayerSearch } from "@/components/player-search";
 
 const navLinks = [
   { href: "/rankings", label: "Rankings" },
@@ -48,6 +49,7 @@ function ThemeToggle() {
 
 export function Navbar() {
   const [mobileOpen, setMobileOpen] = React.useState(false);
+  const [searchOpen, setSearchOpen] = React.useState(false);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -75,6 +77,7 @@ export function Navbar() {
           <Button
             variant="outline"
             className="hidden h-9 w-60 justify-between text-sm text-muted-foreground sm:flex"
+            onClick={() => setSearchOpen(true)}
           >
             <span className="flex items-center gap-2">
               <Search className="size-4" />
@@ -86,7 +89,7 @@ export function Navbar() {
           </Button>
 
           {/* Mobile search icon */}
-          <Button variant="ghost" size="icon" className="sm:hidden">
+          <Button variant="ghost" size="icon" className="sm:hidden" onClick={() => setSearchOpen(true)}>
             <Search className="size-4" />
             <span className="sr-only">Search players</span>
           </Button>
@@ -124,6 +127,8 @@ export function Navbar() {
           ))}
         </nav>
       )}
+
+      <PlayerSearch open={searchOpen} setOpen={setSearchOpen} />
     </header>
   );
 }
