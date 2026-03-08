@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:e2e": "npx playwright test",
     "sync": "npx tsx scripts/sync-sackmann.ts",
-    "compute-elo": "npx tsx scripts/compute-elo.ts"
+    "compute-elo": "npx tsx scripts/compute-elo.ts",
+    "scrape-atp": "npx tsx scripts/scrape-atp.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",
@@ -26,7 +27,8 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "recharts": "^3.7.0",
-    "tailwind-merge": "^3.5.0"
+    "tailwind-merge": "^3.5.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

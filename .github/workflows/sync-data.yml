@@ -19,6 +19,9 @@ jobs:
       - run: npm run sync
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - run: npm run scrape-atp
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
       - run: npm run compute-elo
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
