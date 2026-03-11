@@ -156,10 +156,14 @@ function dateStrToYYYYMMDD(dateStr: string, year: number): string {
 
 let playerFuse: Fuse<CachedPlayer>;
 const resolvedCache = new Map<string, number>();
+let currentTour = "atp";
 
-async function buildPlayerCache(): Promise<void> {
+async function buildPlayerCache(tour: string = "atp"): Promise<void> {
+  currentTour = tour;
+  resolvedCache.clear();
+
   const allPlayers = await prisma.player.findMany({
-    where: { tour: "atp" },
+    where: { tour },
     select: { id: true, nameFirst: true, nameLast: true, slug: true },
   });
 
@@ -176,7 +180,7 @@ async function buildPlayerCache(): Promise<void> {
     threshold: 0.3,
     includeScore: true,
   });
-  console.log(`  Player cache: ${items.length} ATP players`);
+  console.log(`  Player cache: ${items.length} ${tour.toUpperCase()} players`);
 }
 
 /**
@@ -194,15 +198,37 @@ async function resolvePlayerId(
 
   // TE names on match detail pages are "Sinner Jannik" (LastName FirstName)
   // On tournament pages just "Sinner"
+  // Multi-word last names need special handling: "Auger Aliassime Felix"
+  // Try progressively longer last name combinations
   const parts = teName.trim().split(/\s+/);
   let searchLast = parts[0];
   let searchFirst = parts.slice(1).join(" ") || "";
+
+  // Try multi-word last names first (e.g. "Auger Aliassime Felix" -> Last="Auger Aliassime", First="Felix")
+  if (parts.length >= 3) {
+    for (let splitAt = parts.length - 1; splitAt >= 2; splitAt--) {
+      const tryLast = parts.slice(0, splitAt).join(" ");
+      const tryFirst = parts.slice(splitAt).join(" ");
+      const multiMatch = await prisma.player.findMany({
+        where: {
+          tour: currentTour,
+          nameLast: { equals: tryLast, mode: "insensitive" },
+          nameFirst: { equals: tryFirst, mode: "insensitive" },
+        },
+        select: { id: true, nameFirst: true, nameLast: true },
+      });
+      if (multiMatch.length === 1) {
+        resolvedCache.set(cacheKey, multiMatch[0].id);
+        return multiMatch[0].id;
+      }
+    }
+  }
 
   // 1. Try exact match by last name + first name
   if (searchFirst) {
     const exactMatches = await prisma.player.findMany({
       where: {
-        tour: "atp",
+        tour: currentTour,
         nameLast: { equals: searchLast, mode: "insensitive" },
         nameFirst: { equals: searchFirst, mode: "insensitive" },
       },
@@ -233,7 +259,7 @@ async function resolvePlayerId(
   // 2. Try match by last name only (common on tournament pages)
   const lastNameMatches = await prisma.player.findMany({
     where: {
-      tour: "atp",
+      tour: currentTour,
       nameLast: { equals: searchLast, mode: "insensitive" },
     },
     select: { id: true, nameFirst: true, nameLast: true },
@@ -277,7 +303,7 @@ async function resolvePlayerId(
   const norm = (s: string) => s.toLowerCase().replace(/[-']/g, " ");
   const partialMatches = await prisma.player.findMany({
     where: {
-      tour: "atp",
+      tour: currentTour,
       nameLast: { startsWith: searchLast, mode: "insensitive" },
     },
     select: { id: true, nameFirst: true, nameLast: true },
@@ -324,8 +350,8 @@ async function resolvePlayerId(
 
   await prisma.player.upsert({
     where: { id },
-    update: { nameFirst, nameLast, tour: "atp", slug },
-    create: { id, nameFirst, nameLast, tour: "atp", slug },
+    update: { nameFirst, nameLast, tour: currentTour, slug },
+    create: { id, nameFirst, nameLast, tour: currentTour, slug },
   });
 
   resolvedCache.set(cacheKey, id);
@@ -815,6 +841,91 @@ async function syncDay(year: number, month: number, day: number): Promise<number
   return totalImported;
 }
 
+// ── Rankings Sync ─────────────────────────────────────────────────────
+
+/**
+ * Scrape current ATP/WTA rankings from TennisExplorer.
+ * Fetches top 200 (4 pages of 50) for each tour.
+ */
+async function syncRankings(): Promise<void> {
+  console.log("\n--- Syncing Rankings ---");
+
+  const today = new Date();
+  const dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
+
+  for (const tour of [
+    { key: "atp", url: "atp-men", label: "ATP" },
+    { key: "wta", url: "wta-women", label: "WTA" },
+  ]) {
+    // Rebuild player cache for this tour
+    await buildPlayerCache(tour.key);
+    let totalUpserted = 0;
+
+    for (let page = 1; page <= 4; page++) {
+      const url =
+        page === 1
+          ? `${BASE_URL}/ranking/${tour.url}/`
+          : `${BASE_URL}/ranking/${tour.url}/?page=${page}`;
+
+      const html = await fetchPage(url);
+      if (!html) {
+        await sleep(RATE_LIMIT_MS);
+        continue;
+      }
+
+      const $ = cheerio.load(html);
+      const rows = $("table.result tbody tr");
+
+      for (let i = 0; i < rows.length; i++) {
+        const $row = $(rows[i]);
+        const rankText = $row.find("td.rank").text().trim().replace(".", "");
+        const rank = parseInt(rankText, 10);
+        if (isNaN(rank)) continue;
+
+        const nameLink = $row.find("td.t-name a");
+        const name = nameLink.text().trim();
+        const href = nameLink.attr("href") || "";
+        const slug = href.replace(/^\/player\//, "").replace(/\/$/, "");
+        if (!name) continue;
+
+        const pointsText = $row.find("td.long-point").text().trim();
+        const points = parseInt(pointsText, 10);
+        if (isNaN(points)) continue;
+
+        // Resolve player ID using existing matching logic
+        const playerId = await resolvePlayerId(
+          name,
+          slug,
+        );
+
+        await prisma.ranking.upsert({
+          where: {
+            date_playerId_tour: {
+              date: dateStr,
+              playerId,
+              tour: tour.key,
+            },
+          },
+          update: { rank, points },
+          create: {
+            date: dateStr,
+            rank,
+            playerId,
+            points,
+            tour: tour.key,
+          },
+        });
+
+        totalUpserted++;
+      }
+
+      await sleep(RATE_LIMIT_MS);
+    }
+
+    console.log(`  ${tour.label}: ${totalUpserted} rankings synced`);
+  }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -844,7 +955,12 @@ async function main(): Promise<void> {
     totalImported += imported;
   }
 
-  console.log(`\n=== Sync complete: ${totalImported} new matches ===`);
+  console.log(`\n=== Match sync complete: ${totalImported} new matches ===`);
+
+  // Sync rankings
+  await syncRankings();
+
+  console.log("\n=== All sync complete ===");
 }
 
 main()
