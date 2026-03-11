@@ -11,10 +11,12 @@
     "test:e2e": "npx playwright test",
     "sync": "npx tsx scripts/sync-sackmann.ts",
     "compute-elo": "npx tsx scripts/compute-elo.ts",
-    "scrape-atp": "npx tsx scripts/scrape-atp.ts"
+    "scrape-atp": "npx tsx scripts/scrape-atp.ts",
+    "scrape-te": "npx tsx scripts/scrape-te.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",
+    "cheerio": "^1.2.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
