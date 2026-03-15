@@ -6,14 +6,14 @@ test.describe("Homepage", () => {
     expect(response?.status()).toBe(200);
   });
 
-  test("title contains tennisconcrete", async ({ page }) => {
+  test("title contains baseline", async ({ page }) => {
     await page.goto("/");
-    await expect(page).toHaveTitle(/tennisconcrete/i);
+    await expect(page).toHaveTitle(/baseline/i);
   });
 
   test("hero section is visible with site name", async ({ page }) => {
     await page.goto("/");
-    const hero = page.locator("h1", { hasText: "tennisconcrete" });
+    const hero = page.locator("h1", { hasText: "baseline" });
     await expect(hero).toBeVisible();
   });
 

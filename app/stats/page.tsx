@@ -65,7 +65,7 @@ export async function generateMetadata({
   const tourLabel = tour.toUpperCase();
 
   return {
-    title: `${tourLabel} Stats Leaderboards — tennisconcrete`,
+    title: `${tourLabel} Stats Leaderboards — baseline`,
   };
 }
 

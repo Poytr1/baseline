@@ -20,7 +20,7 @@ const prisma = new PrismaClient();
 
 const BASE_URL = "https://www.tennisexplorer.com";
 const RATE_LIMIT_MS = 1500;
-const USER_AGENT = "tennisconcrete-data-sync/1.0";
+const USER_AGENT = "baseline-data-sync/1.0";
 const SCRAPED_ID_BASE = 900_000_000;
 
 // Skip challenger, futures, and exhibition tournaments

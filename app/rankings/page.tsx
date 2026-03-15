@@ -39,7 +39,7 @@ export async function generateMetadata({
   const surfaceLabel = surface === "overall" ? "" : ` (${surface.charAt(0).toUpperCase() + surface.slice(1)})`;
 
   return {
-    title: `${tourLabel} Elo Rankings${surfaceLabel} — tennisconcrete`,
+    title: `${tourLabel} Elo Rankings${surfaceLabel} — baseline`,
   };
 }
 

@@ -24,11 +24,11 @@ export async function generateMetadata({
   const player = await getPlayerBySlug(slug);
 
   if (!player) {
-    return { title: "Player Not Found | tennisconcrete" };
+    return { title: "Player Not Found | baseline" };
   }
 
   return {
-    title: `${player.nameFirst} ${player.nameLast} | tennisconcrete`,
+    title: `${player.nameFirst} ${player.nameLast} | baseline`,
   };
 }
 

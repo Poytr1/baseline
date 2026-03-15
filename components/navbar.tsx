@@ -56,7 +56,7 @@ export function Navbar() {
       <div className="mx-auto flex h-14 max-w-7xl items-center px-4">
         {/* Logo */}
         <Link href="/" className="mr-6 flex items-center font-bold">
-          tennisconcrete
+          baseline
         </Link>
 
         {/* Desktop nav */}

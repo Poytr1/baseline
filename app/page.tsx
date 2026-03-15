@@ -8,7 +8,7 @@ import { RecentResults } from "@/components/recent-results";
 export const revalidate = 1800; // ISR: 30 minutes
 
 export const metadata: Metadata = {
-  title: "tennisconcrete — Modern Tennis Analytics",
+  title: "baseline — Modern Tennis Analytics",
   description:
     "Modern tennis analytics powered by data. Elo ratings, head-to-head comparisons, and statistical leaderboards.",
 };
@@ -34,7 +34,7 @@ export default function HomePage() {
       {/* Hero */}
       <section className="flex flex-col items-center gap-4 pt-8 pb-4 text-center">
         <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
-          tennisconcrete
+          baseline
         </h1>
         <p className="max-w-lg text-lg text-muted-foreground">
           Modern tennis analytics powered by data

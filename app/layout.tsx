@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "tennisconcrete",
+  title: "baseline",
   description: "Modern tennis analytics",
 };
 
