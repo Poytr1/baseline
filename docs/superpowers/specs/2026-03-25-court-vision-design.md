@@ -14,7 +14,7 @@ Court Vision is a Python-based computer vision subproject within the Baseline te
 
 ### In scope
 - Process one full match end-to-end from a YouTube URL or local video file
-- Shot type classification: forehand, backhand, serve, volley, overhead
+- Shot type classification: forehand, backhand, serve, volley, overhead, slice
 - Ball placement: direction (down-the-line, crosscourt, middle) and depth (short, deep)
 - Point outcome: winner, error, unforced error
 - Confidence scores on all predictions
@@ -22,7 +22,7 @@ Court Vision is a Python-based computer vision subproject within the Baseline te
 - Export to Sackmann-compatible CSV and aggregated match stats
 
 ### Out of scope (future)
-- Spin detection (topspin, flat, slice)
+- Spin detection (topspin, flat — note: slice as a stroke type is in MVP scope; spin as a ball property is deferred)
 - Serve speed estimation
 - Player identification by name (MVP tracks "near player" / "far player")
 - Rally sequence encoding in Match Charting Project format
@@ -38,7 +38,7 @@ A single Python package with sequential stages. Each stage is a module within th
 ### Project Structure
 
 ```
-tennisconcrete/
+baseline/
 ├── app/                        # Existing Next.js app
 ├── scripts/                    # Existing data sync scripts
 ├── prisma/                     # Existing schema
@@ -70,6 +70,7 @@ tennisconcrete/
 ### Stage 1: Video Ingestion
 - Accept YouTube URL or local video file path
 - Download via `yt-dlp` if URL
+- Normalize to 1280x720 resolution (TrackNetV2's training resolution) regardless of source quality
 - Extract frames at native FPS (typically 25-30fps for broadcast)
 - Store as frame sequence for downstream processing
 
@@ -114,6 +115,24 @@ YouTube URL / local file
 ```
 
 ## Output Format
+
+### Court Coordinate System
+
+All `x`/`y` placement values use meters with the following convention:
+- **Origin (0, 0):** Center of the net
+- **X-axis:** Parallel to the net. Positive X = right side when facing the far end. Range: -5.485 to +5.485 (doubles sideline to sideline)
+- **Y-axis:** Perpendicular to the net. Positive Y = far side of court. Range: -11.885 to +11.885 (baseline to baseline)
+
+### Zone Vocabulary
+
+Zones are derived from the `x`/`y` coordinates and vary by shot type:
+
+**Serve zones** (service box only): `wide`, `body`, `t`
+
+**Rally/groundstroke zones** (full court):
+- Direction: `crosscourt`, `down_the_line`, `middle`
+- Depth: `short` (inside service line), `deep` (behind service line)
+- Combined as: `crosscourt_deep`, `down_the_line_short`, `middle_deep`, etc.
 
 ### Raw Output (per match)
 
@@ -177,9 +196,18 @@ CSV/JSON summary mapping to stats Baseline already understands: aces, winners, u
 3. Export script converts reviewed data to:
    - **Point-by-point CSV** — compatible with Sackmann `tennis_pointbypoint` format
    - **Aggregated match stats** — compatible with existing `Match` model fields
-4. Existing Node.js import scripts (or a new one) load aggregated stats into PostgreSQL
+4. A new Node.js import script loads aggregated stats into PostgreSQL (the existing `sync-sackmann.ts` imports from remote URLs, so a new `import-court-vision.ts` script is needed for local file import)
 
 The CV pipeline does not need to know about Prisma or PostgreSQL — it produces files that the existing Node.js layer consumes.
+
+### Match Identity Mapping
+
+For MVP, CV-processed matches are stored as standalone JSON files without linking to existing database `Match`/`Player` records. Future integration will require:
+- A metadata step in the review UI where the reviewer identifies the tournament, players, and date
+- A mapping script that matches this metadata to existing `Player.id` and `Tournament.id` records
+- New Prisma models (`Point`, `Shot`) to store point-level data — the current schema only has match-level aggregates
+
+This is explicitly deferred beyond MVP. The aggregated stats export (aces, winners, etc.) can still be imported into existing `Match` records once the match is identified during review.
 
 ## Human Review UI
 
@@ -214,7 +242,7 @@ Quick to build, Python-native, built-in video/image display. Good enough for a r
 | ML Framework | `torch` + `torchvision` | Model inference |
 | Ball Tracking | TrackNetV2 (custom/published weights) | Ball detection from frames |
 | Player Detection | `ultralytics` (YOLOv8) | Player bounding boxes |
-| Pose Estimation | `mediapipe` | Player skeleton/keypoints |
+| Pose Estimation | `mediapipe` (>=0.10, Tasks API) | Player skeleton/keypoints |
 | Court Detection | `opencv-python` | Hough lines + homography |
 | Scene Filter | `torchvision` (ResNet-18) | Pre-trained, fine-tuned |
 | Review UI | `streamlit` | Human review interface |
@@ -243,7 +271,7 @@ def get_device():
     return torch.device("cpu")
 ```
 
-Estimated processing time per match on M-series: ~45-90 minutes.
+Estimated processing time per match on M-series: ~45-90 minutes. Rough breakdown for a 3-set match (~7200s at 30fps = ~216K total frames; scene filter keeps ~40% = ~86K gameplay frames): scene filter ~5 min, court detection ~3 min, TrackNet at ~30fps on MPS ~48 min, YOLO + MediaPipe ~15 min, shot classification <1 min.
 
 ## CLI Interface
 
@@ -270,3 +298,65 @@ For MVP, lean on **pre-trained models** — avoid training from scratch:
 - **Player detection:** YOLOv8 out-of-the-box for person detection, no training needed
 - **Pose estimation:** MediaPipe out-of-the-box, no training needed
 - **Shot classification:** Rule-based heuristics from pose keypoints, no ML model for MVP
+
+## Error Handling
+
+Each pipeline stage can fail independently. The strategy per stage:
+
+| Stage | Failure mode | Behavior |
+|---|---|---|
+| Video Ingestion | yt-dlp download fails, unsupported format | Abort with clear error message |
+| Scene Filter | Model inference fails | Abort — no downstream stages can run without filtered frames |
+| Court Detection | Homography fails on a segment | Skip segment, log warning. Mark affected frames as `low_confidence` |
+| Ball Tracking | Ball lost for extended period (>2s) | Interpolate short gaps (<0.5s), mark longer gaps as `ball_not_detected` |
+| Player Detection | Player not detected in frame | Use last known position, mark as `estimated` |
+| Shot Classification | Ambiguous pose at contact point | Output best guess with low confidence score; review UI will flag it |
+
+The pipeline writes partial results — if it crashes mid-match, completed points are preserved in the output JSON. The pipeline can be re-run with `--resume` to continue from the last completed point.
+
+## Model Acquisition
+
+Model weights are too large for git. On first setup, a download script fetches them:
+
+```bash
+# Download all required model weights
+court-vision download-models
+```
+
+This downloads:
+- **TrackNetV2 weights** from the original authors' published release (Chang et al.)
+- **YOLOv8n weights** from Ultralytics (auto-downloaded by the `ultralytics` package on first use)
+- **ResNet-18 base weights** from torchvision (auto-downloaded by PyTorch on first use)
+
+The fine-tuned scene filter weights must be trained locally (see `court-vision train-scene-filter`). A small labeled dataset (~500 frames per category) is included in `data/scene_filter_training/`.
+
+## Configuration
+
+Pipeline parameters are configurable via a `court-vision.yaml` config file or CLI flags:
+
+```yaml
+# court-vision.yaml
+pipeline:
+  target_resolution: [1280, 720]    # Normalize input to this resolution
+  fps_override: null                 # Use native FPS if null
+  confidence_threshold: 0.7          # Below this → flagged for review
+  max_interpolation_gap_s: 0.5       # Max ball tracking gap to interpolate
+
+output:
+  directory: output/
+  format: json                       # json or csv
+
+device: auto                         # auto, mps, cuda, or cpu
+```
+
+## Testing Strategy
+
+- **Unit tests:** Test each stage's core logic in isolation (e.g., shot classification rules given mock pose keypoints, zone computation from coordinates, homography math)
+- **Integration test:** One short clip (~30s, ~1 point) checked into `data/test_fixtures/` with expected output. Pipeline runs end-to-end and output is compared against the fixture.
+- **Model tests:** Smoke tests that verify models load and produce output of the expected shape on a single frame
+
+Test fixtures are small enough to commit to git. Full match videos remain gitignored.
+
+## Legal Considerations
+
+Downloading YouTube videos may violate YouTube's Terms of Service. This tool is intended for personal research and educational use under fair use principles. Users are responsible for ensuring their usage complies with applicable terms and laws. The open-source dataset should be built from matches where redistribution rights are clear or where only derived data (not video) is published.
