@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "court-vision"
+version = "0.1.0"
+description = "Automated shot-by-shot tennis data from broadcast video"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "yt-dlp>=2024.0",
+    "typer>=0.12",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[project.scripts]
+court-vision = "court_vision.cli:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

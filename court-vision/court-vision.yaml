@@ -1,0 +1,11 @@
+pipeline:
+  target_resolution: [1280, 720]
+  fps_override: null
+  confidence_threshold: 0.7
+  max_interpolation_gap_s: 0.5
+
+output:
+  directory: output/
+  format: json
+
+device: auto

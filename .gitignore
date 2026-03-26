@@ -48,3 +48,11 @@ next-env.d.ts
 
 # superpowers brainstorming
 .superpowers/
+
+# court-vision
+court-vision/models/
+court-vision/data/
+court-vision/output/
+court-vision/.venv/
+court-vision/__pycache__/
+court-vision/src/*.egg-info/
