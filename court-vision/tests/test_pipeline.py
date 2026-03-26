@@ -1,0 +1,110 @@
+"""Tests for the pipeline orchestrator."""
+
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from court_vision.pipeline import PipelineResult, run_pipeline
+
+
+class TestRunPipeline:
+    @patch("court_vision.pipeline.extract_frames")
+    @patch("court_vision.pipeline.classify_frames")
+    @patch("court_vision.pipeline.filter_gameplay_segments")
+    @patch("court_vision.pipeline.load_scene_model")
+    @patch("court_vision.pipeline.get_device")
+    @patch("court_vision.pipeline.load_config")
+    def test_local_file_pipeline(
+        self,
+        mock_load_config: MagicMock,
+        mock_get_device: MagicMock,
+        mock_load_model: MagicMock,
+        mock_filter: MagicMock,
+        mock_classify: MagicMock,
+        mock_extract: MagicMock,
+        tmp_path: Path,
+    ):
+        """Pipeline orchestrates ingest -> scene filter for a local file."""
+        import torch
+
+        from court_vision.config import PipelineConfig
+        from court_vision.ingest import FrameSequence
+        from court_vision.scene_filter import GameplaySegment
+
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+
+        mock_load_config.return_value = PipelineConfig()
+        mock_get_device.return_value = torch.device("cpu")
+        mock_load_model.return_value = MagicMock()
+        mock_extract.return_value = FrameSequence(
+            frames_dir=tmp_path / "frames",
+            fps=30.0,
+            total_frames=100,
+            resolution=(1280, 720),
+        )
+        mock_classify.return_value = []
+        mock_filter.return_value = [
+            GameplaySegment(
+                start_frame=0, end_frame=50,
+                start_time_s=0.0, end_time_s=1.67,
+                frame_count=51,
+            )
+        ]
+
+        result = run_pipeline(str(video_path), config_path=None)
+
+        assert isinstance(result, PipelineResult)
+        assert result.total_frames == 100
+        assert len(result.gameplay_segments) == 1
+        mock_extract.assert_called_once()
+        mock_classify.assert_called_once()
+
+    @patch("court_vision.pipeline.download_video")
+    @patch("court_vision.pipeline.extract_frames")
+    @patch("court_vision.pipeline.classify_frames")
+    @patch("court_vision.pipeline.filter_gameplay_segments")
+    @patch("court_vision.pipeline.load_scene_model")
+    @patch("court_vision.pipeline.get_device")
+    @patch("court_vision.pipeline.load_config")
+    def test_youtube_url_triggers_download(
+        self,
+        mock_load_config: MagicMock,
+        mock_get_device: MagicMock,
+        mock_load_model: MagicMock,
+        mock_filter: MagicMock,
+        mock_classify: MagicMock,
+        mock_extract: MagicMock,
+        mock_download: MagicMock,
+        tmp_path: Path,
+    ):
+        """YouTube URLs trigger yt-dlp download before frame extraction."""
+        import torch
+
+        from court_vision.config import PipelineConfig
+        from court_vision.ingest import FrameSequence
+
+        mock_load_config.return_value = PipelineConfig()
+        mock_get_device.return_value = torch.device("cpu")
+        mock_load_model.return_value = MagicMock()
+        downloaded = tmp_path / "video.mp4"
+        downloaded.touch()
+        mock_download.return_value = downloaded
+        mock_extract.return_value = FrameSequence(
+            frames_dir=tmp_path / "frames",
+            fps=30.0,
+            total_frames=50,
+            resolution=(1280, 720),
+        )
+        mock_classify.return_value = []
+        mock_filter.return_value = []
+
+        result = run_pipeline(
+            "https://www.youtube.com/watch?v=abc123",
+            config_path=None,
+            output_dir=tmp_path,
+        )
+
+        mock_download.assert_called_once()
+        assert result.total_frames == 50
