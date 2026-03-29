@@ -127,3 +127,188 @@ class TestClassifyLines:
         h, v = classify_lines(lines, angle_threshold=30.0)
         assert len(h) == 2
         assert len(v) == 1
+
+
+class TestLineIntersection:
+    def test_perpendicular_lines_intersect(self):
+        """Two perpendicular lines intersect at their crossing point."""
+        from court_vision.court_detect import find_line_intersection
+
+        line1 = ((100, 300), (900, 300))
+        line2 = ((500, 100), (500, 600))
+
+        point = find_line_intersection(line1, line2)
+
+        assert point is not None
+        x, y = point
+        assert x == pytest.approx(500.0, abs=1.0)
+        assert y == pytest.approx(300.0, abs=1.0)
+
+    def test_parallel_lines_no_intersection(self):
+        """Parallel lines return None."""
+        from court_vision.court_detect import find_line_intersection
+
+        line1 = ((100, 300), (900, 300))
+        line2 = ((100, 400), (900, 400))
+
+        point = find_line_intersection(line1, line2)
+
+        assert point is None
+
+    def test_angled_lines_intersect(self):
+        """Two angled lines find their intersection."""
+        from court_vision.court_detect import find_line_intersection
+
+        line1 = ((0, 0), (100, 100))
+        line2 = ((100, 0), (0, 100))
+
+        point = find_line_intersection(line1, line2)
+
+        assert point is not None
+        x, y = point
+        assert x == pytest.approx(50.0, abs=1.0)
+        assert y == pytest.approx(50.0, abs=1.0)
+
+
+class TestExtractKeypoints:
+    def test_extracts_keypoints_from_court_lines(self):
+        """Extracts intersection points from horizontal and vertical lines."""
+        from court_vision.court_detect import extract_keypoints
+
+        horizontal = [
+            ((200, 150), (880, 150)),
+            ((200, 650), (1080, 650)),
+        ]
+        vertical = [
+            ((200, 650), (200, 150)),
+            ((1080, 650), (880, 150)),
+        ]
+
+        keypoints = extract_keypoints(horizontal, vertical)
+
+        assert len(keypoints) >= 2
+
+    def test_keypoints_are_float_tuples(self):
+        """Each keypoint is a (x, y) tuple of floats."""
+        from court_vision.court_detect import extract_keypoints
+
+        horizontal = [((100, 300), (900, 300))]
+        vertical = [((500, 100), (500, 600))]
+
+        keypoints = extract_keypoints(horizontal, vertical)
+
+        for x, y in keypoints:
+            assert isinstance(x, float)
+            assert isinstance(y, float)
+
+    def test_no_keypoints_from_empty_lines(self):
+        """Returns empty list when no lines provided."""
+        from court_vision.court_detect import extract_keypoints
+
+        keypoints = extract_keypoints([], [])
+
+        assert keypoints == []
+
+
+class TestComputeHomography:
+    def test_identity_like_homography(self):
+        """When pixel and court points are proportional, homography maps correctly."""
+        from court_vision.court_detect import compute_homography
+
+        pixel_points = np.array([
+            [200.0, 650.0],
+            [1080.0, 650.0],
+            [880.0, 150.0],
+            [400.0, 150.0],
+        ], dtype=np.float64)
+
+        court_points = np.array([
+            [-4.115, -11.885],
+            [4.115, -11.885],
+            [4.115, 11.885],
+            [-4.115, 11.885],
+        ], dtype=np.float64)
+
+        H = compute_homography(pixel_points, court_points)
+
+        assert H is not None
+        assert H.shape == (3, 3)
+
+    def test_homography_transforms_known_point(self):
+        """Homography correctly transforms a known pixel point to court coords."""
+        from court_vision.court_detect import compute_homography, pixel_to_court
+
+        pixel_points = np.array([
+            [200.0, 650.0],
+            [1080.0, 650.0],
+            [880.0, 150.0],
+            [400.0, 150.0],
+        ], dtype=np.float64)
+
+        court_points = np.array([
+            [-4.115, -11.885],
+            [4.115, -11.885],
+            [4.115, 11.885],
+            [-4.115, 11.885],
+        ], dtype=np.float64)
+
+        H = compute_homography(pixel_points, court_points)
+
+        result = pixel_to_court(np.array([200.0, 650.0]), H)
+        assert result[0] == pytest.approx(-4.115, abs=0.5)
+        assert result[1] == pytest.approx(-11.885, abs=0.5)
+
+    def test_homography_needs_at_least_4_points(self):
+        """Returns None with fewer than 4 point correspondences."""
+        from court_vision.court_detect import compute_homography
+
+        pixel_points = np.array([[100.0, 100.0], [200.0, 200.0], [300.0, 300.0]])
+        court_points = np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])
+
+        H = compute_homography(pixel_points, court_points)
+
+        assert H is None
+
+
+class TestPixelToCourt:
+    def test_transforms_single_point(self):
+        """Transforms a single pixel coordinate to court space."""
+        from court_vision.court_detect import pixel_to_court
+
+        H = np.eye(3, dtype=np.float64)
+
+        result = pixel_to_court(np.array([640.0, 360.0]), H)
+
+        assert len(result) == 2
+        assert isinstance(result[0], float)
+        assert isinstance(result[1], float)
+
+
+class TestMatchKeypoints:
+    def test_matches_four_corners(self):
+        """Matches detected pixel keypoints to their nearest court keypoint candidates."""
+        from court_vision.court_detect import match_keypoints_to_court
+
+        pixel_keypoints = [
+            (200.0, 650.0),
+            (1080.0, 650.0),
+            (880.0, 150.0),
+            (400.0, 150.0),
+        ]
+
+        pixel_pts, court_pts = match_keypoints_to_court(pixel_keypoints)
+
+        assert len(pixel_pts) >= 4
+        assert len(court_pts) >= 4
+        assert pixel_pts.shape[1] == 2
+        assert court_pts.shape[1] == 2
+
+    def test_returns_none_with_too_few_keypoints(self):
+        """Returns None when fewer than 4 keypoints detected."""
+        from court_vision.court_detect import match_keypoints_to_court
+
+        pixel_keypoints = [(200.0, 650.0), (1080.0, 650.0)]
+
+        result = match_keypoints_to_court(pixel_keypoints)
+
+        assert result is None

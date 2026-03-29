@@ -127,3 +127,181 @@ def classify_lines(
         # else: diagonal — discard
 
     return horizontal, vertical
+
+
+def find_line_intersection(
+    line1: tuple[tuple[int, int], tuple[int, int]],
+    line2: tuple[tuple[int, int], tuple[int, int]],
+) -> tuple[float, float] | None:
+    """Find the intersection point of two line segments (extended to infinite lines).
+
+    Uses the cross-product method for line-line intersection.
+
+    Args:
+        line1: First line as ((x1, y1), (x2, y2)).
+        line2: Second line as ((x3, y3), (x4, y4)).
+
+    Returns:
+        (x, y) intersection point, or None if lines are parallel.
+    """
+    (x1, y1), (x2, y2) = line1
+    (x3, y3), (x4, y4) = line2
+
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < 1e-10:
+        return None  # parallel or coincident
+
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+
+    ix = x1 + t * (x2 - x1)
+    iy = y1 + t * (y2 - y1)
+
+    return (float(ix), float(iy))
+
+
+def extract_keypoints(
+    horizontal_lines: list[tuple[tuple[int, int], tuple[int, int]]],
+    vertical_lines: list[tuple[tuple[int, int], tuple[int, int]]],
+    frame_width: int = 1280,
+    frame_height: int = 720,
+) -> list[tuple[float, float]]:
+    """Extract court keypoints as intersections of horizontal and vertical lines.
+
+    Computes all pairwise intersections between horizontal and vertical
+    lines and filters to points within the frame bounds.
+
+    Args:
+        horizontal_lines: Detected horizontal court lines.
+        vertical_lines: Detected vertical court lines.
+        frame_width: Image width for bounds checking.
+        frame_height: Image height for bounds checking.
+
+    Returns:
+        List of (x, y) pixel coordinates for detected keypoints.
+    """
+    keypoints: list[tuple[float, float]] = []
+
+    for h_line in horizontal_lines:
+        for v_line in vertical_lines:
+            point = find_line_intersection(h_line, v_line)
+            if point is None:
+                continue
+
+            x, y = point
+            # Keep only points within frame bounds (with small margin)
+            margin = 50
+            if -margin <= x <= frame_width + margin and -margin <= y <= frame_height + margin:
+                keypoints.append(point)
+
+    return keypoints
+
+
+def compute_homography(
+    pixel_points: np.ndarray,
+    court_points: np.ndarray,
+) -> np.ndarray | None:
+    """Compute the homography matrix from pixel to court coordinates.
+
+    Requires at least 4 point correspondences.
+
+    Args:
+        pixel_points: Array of shape (N, 2) — pixel (x, y) coordinates.
+        court_points: Array of shape (N, 2) — court (x, y) coordinates in meters.
+
+    Returns:
+        3x3 homography matrix, or None if computation fails.
+    """
+    if len(pixel_points) < 4 or len(court_points) < 4:
+        return None
+
+    H, mask = cv2.findHomography(pixel_points, court_points, method=0)
+
+    if H is None:
+        return None
+
+    return H
+
+
+def pixel_to_court(
+    pixel_point: np.ndarray,
+    homography: np.ndarray,
+) -> tuple[float, float]:
+    """Transform a pixel coordinate to court coordinates using a homography.
+
+    Args:
+        pixel_point: (x, y) pixel coordinate as numpy array.
+        homography: 3x3 homography matrix from compute_homography.
+
+    Returns:
+        (x, y) court coordinate in meters.
+    """
+    # Convert to homogeneous coordinates
+    px = np.array([pixel_point[0], pixel_point[1], 1.0], dtype=np.float64)
+
+    # Apply homography
+    transformed = homography @ px
+
+    # Convert back from homogeneous
+    w = transformed[2]
+    if abs(w) < 1e-10:
+        return (0.0, 0.0)
+
+    return (float(transformed[0] / w), float(transformed[1] / w))
+
+
+def match_keypoints_to_court(
+    pixel_keypoints: list[tuple[float, float]],
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Match detected pixel keypoints to canonical court coordinates.
+
+    Uses geometric ordering: sorts keypoints by y-coordinate to separate
+    "near" (bottom of image, large y) from "far" (top of image, small y),
+    then by x-coordinate within each row to get left-to-right ordering.
+
+    Matches the 4 outermost corners to singles court corners.
+
+    Args:
+        pixel_keypoints: List of (x, y) pixel coordinates from keypoint extraction.
+
+    Returns:
+        Tuple of (pixel_points, court_points) as (N, 2) arrays, or None
+        if fewer than 4 keypoints are available.
+    """
+    if len(pixel_keypoints) < 4:
+        return None
+
+    points = np.array(pixel_keypoints, dtype=np.float64)
+
+    # Sort by y-coordinate: top of image (far court) has small y
+    sorted_by_y = points[points[:, 1].argsort()]
+
+    # Split into "far" (top half) and "near" (bottom half)
+    mid = len(sorted_by_y) // 2
+    far_points = sorted_by_y[:mid]
+    near_points = sorted_by_y[mid:]
+
+    # Sort each group by x-coordinate (left to right)
+    far_sorted = far_points[far_points[:, 0].argsort()]
+    near_sorted = near_points[near_points[:, 0].argsort()]
+
+    # Take outermost corners: far-left, far-right, near-left, near-right
+    far_left = far_sorted[0]
+    far_right = far_sorted[-1]
+    near_left = near_sorted[0]
+    near_right = near_sorted[-1]
+
+    pixel_pts = np.array([near_left, near_right, far_right, far_left], dtype=np.float64)
+
+    # Map to singles court corners
+    court_pts = np.array([
+        [COURT_KEYPOINTS["baseline_near_left_singles"][0],
+         COURT_KEYPOINTS["baseline_near_left_singles"][1]],
+        [COURT_KEYPOINTS["baseline_near_right_singles"][0],
+         COURT_KEYPOINTS["baseline_near_right_singles"][1]],
+        [COURT_KEYPOINTS["baseline_far_right_singles"][0],
+         COURT_KEYPOINTS["baseline_far_right_singles"][1]],
+        [COURT_KEYPOINTS["baseline_far_left_singles"][0],
+         COURT_KEYPOINTS["baseline_far_left_singles"][1]],
+    ], dtype=np.float64)
+
+    return pixel_pts, court_pts
