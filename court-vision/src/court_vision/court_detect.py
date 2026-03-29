@@ -38,3 +38,50 @@ COURT_KEYPOINTS: dict[str, tuple[float, float]] = {
     "baseline_near_right_singles": (_SINGLES_WIDTH_HALF, -_BASELINE_DIST),
     "baseline_near_right_doubles": (_DOUBLES_WIDTH_HALF, -_BASELINE_DIST),
 }
+
+
+import cv2
+import numpy as np
+
+
+def detect_court_lines(
+    frame: np.ndarray,
+    canny_low: int = 50,
+    canny_high: int = 150,
+    hough_threshold: int = 80,
+    min_line_length: int = 100,
+    max_line_gap: int = 30,
+) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+    """Detect court lines in a frame using Hough line transform.
+
+    Applies white-pixel masking (court lines are white), Canny edge
+    detection, and probabilistic Hough transform.
+
+    Args:
+        frame: BGR image as numpy array (H, W, 3).
+        canny_low: Lower Canny edge threshold.
+        canny_high: Upper Canny edge threshold.
+        hough_threshold: Hough accumulator threshold.
+        min_line_length: Minimum line length in pixels.
+        max_line_gap: Maximum gap between line segments to merge.
+
+    Returns:
+        List of line segments as ((x1, y1), (x2, y2)) tuples.
+    """
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    white_mask = cv2.inRange(hsv, (0, 0, 180), (180, 50, 255))
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, bright_mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    combined = cv2.bitwise_or(white_mask, bright_mask)
+    edges = cv2.Canny(combined, canny_low, canny_high)
+    raw_lines = cv2.HoughLinesP(
+        edges, rho=1, theta=np.pi / 180, threshold=hough_threshold,
+        minLineLength=min_line_length, maxLineGap=max_line_gap,
+    )
+    if raw_lines is None:
+        return []
+    lines: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    for line in raw_lines:
+        x1, y1, x2, y2 = line[0]
+        lines.append(((int(x1), int(y1)), (int(x2), int(y2))))
+    return lines

@@ -1,5 +1,6 @@
 """Tests for court detection and homography."""
 
+import cv2
 import numpy as np
 import pytest
 
@@ -39,3 +40,48 @@ class TestCourtKeypoints:
         for name, (x, y) in COURT_KEYPOINTS.items():
             assert isinstance(x, float), f"{name} x is not float"
             assert isinstance(y, float), f"{name} y is not float"
+
+
+def _draw_court_lines(img: np.ndarray) -> np.ndarray:
+    """Draw white court lines on a green court image for testing."""
+    h, w = img.shape[:2]
+    cv2.line(img, (200, 650), (1080, 650), (255, 255, 255), 2)
+    cv2.line(img, (400, 150), (880, 150), (255, 255, 255), 2)
+    cv2.line(img, (200, 650), (400, 150), (255, 255, 255), 2)
+    cv2.line(img, (1080, 650), (880, 150), (255, 255, 255), 2)
+    cv2.line(img, (280, 450), (1000, 450), (255, 255, 255), 2)
+    cv2.line(img, (360, 280), (920, 280), (255, 255, 255), 2)
+    cv2.line(img, (640, 280), (640, 450), (255, 255, 255), 2)
+    return img
+
+
+class TestDetectCourtLines:
+    def test_detects_lines_on_synthetic_court(self):
+        """Detects lines from a synthetic court image."""
+        from court_vision.court_detect import detect_court_lines
+
+        img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)  # green
+        img = _draw_court_lines(img)
+        lines = detect_court_lines(img)
+        assert len(lines) >= 4
+
+    def test_returns_list_of_line_segments(self):
+        """Each detected line is a pair of (x, y) endpoints."""
+        from court_vision.court_detect import detect_court_lines
+
+        img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)
+        img = _draw_court_lines(img)
+        lines = detect_court_lines(img)
+        for line in lines:
+            assert len(line) == 2, "Each line should be ((x1,y1), (x2,y2))"
+            (x1, y1), (x2, y2) = line
+            assert isinstance(x1, (int, float))
+            assert isinstance(y1, (int, float))
+
+    def test_no_lines_on_blank_image(self):
+        """Returns empty list when no court lines are present."""
+        from court_vision.court_detect import detect_court_lines
+
+        img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)
+        lines = detect_court_lines(img)
+        assert lines == []
