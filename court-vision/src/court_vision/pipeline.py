@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from court_vision.config import PipelineConfig, load_config
+from court_vision.court_detect import CourtDetectionResult, compute_segment_homographies
 from court_vision.device import get_device
 from court_vision.ingest import (
     FrameSequence,
@@ -21,7 +22,7 @@ from court_vision.scene_filter import (
 
 @dataclass
 class PipelineResult:
-    """Result of a pipeline run (Phase 1: ingest + scene filter)."""
+    """Result of a pipeline run."""
 
     source: str
     total_frames: int
@@ -29,6 +30,7 @@ class PipelineResult:
     gameplay_segments: list[GameplaySegment]
     gameplay_frame_count: int
     frames_dir: Path
+    court_detections: list[CourtDetectionResult] | None = None
 
 
 def run_pipeline(
@@ -39,7 +41,7 @@ def run_pipeline(
 ) -> PipelineResult:
     """Run the Court Vision pipeline on a video source.
 
-    Phase 1 stages: video ingestion -> scene filter.
+    Stages: video ingestion -> scene filter -> court detection.
 
     Args:
         source: YouTube URL or local video file path.
@@ -49,7 +51,7 @@ def run_pipeline(
                             None uses ImageNet pre-trained base.
 
     Returns:
-        PipelineResult with frame data and gameplay segments.
+        PipelineResult with frame data, gameplay segments, and court detections.
     """
     config = load_config(config_path)
     device = get_device(override=config.device)
@@ -74,6 +76,9 @@ def run_pipeline(
 
     gameplay_frames = sum(seg.frame_count for seg in segments)
 
+    # Stage 3: Court Detection & Homography
+    court_detections = compute_segment_homographies(frame_seq.frames_dir, segments)
+
     return PipelineResult(
         source=source,
         total_frames=frame_seq.total_frames,
@@ -81,4 +86,5 @@ def run_pipeline(
         gameplay_segments=segments,
         gameplay_frame_count=gameplay_frames,
         frames_dir=frame_seq.frames_dir,
+        court_detections=court_detections,
     )
