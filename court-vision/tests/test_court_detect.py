@@ -85,3 +85,45 @@ class TestDetectCourtLines:
         img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)
         lines = detect_court_lines(img)
         assert lines == []
+
+
+class TestClassifyLines:
+    def test_horizontal_line(self):
+        """A nearly-horizontal line is classified as horizontal."""
+        from court_vision.court_detect import classify_lines
+
+        lines = [((100, 300), (900, 310))]  # nearly horizontal
+        h, v = classify_lines(lines, angle_threshold=30.0)
+        assert len(h) == 1
+        assert len(v) == 0
+
+    def test_vertical_line(self):
+        """A nearly-vertical line is classified as vertical."""
+        from court_vision.court_detect import classify_lines
+
+        lines = [((500, 100), (510, 600))]  # nearly vertical
+        h, v = classify_lines(lines, angle_threshold=30.0)
+        assert len(h) == 0
+        assert len(v) == 1
+
+    def test_diagonal_line_excluded(self):
+        """A 45-degree line is neither horizontal nor vertical."""
+        from court_vision.court_detect import classify_lines
+
+        lines = [((100, 100), (500, 500))]  # 45 degrees
+        h, v = classify_lines(lines, angle_threshold=30.0)
+        assert len(h) == 0
+        assert len(v) == 0
+
+    def test_mixed_lines(self):
+        """Correctly separates a mix of horizontal and vertical lines."""
+        from court_vision.court_detect import classify_lines
+
+        lines = [
+            ((100, 300), (900, 310)),   # horizontal
+            ((500, 100), (510, 600)),   # vertical
+            ((200, 200), (800, 205)),   # horizontal
+        ]
+        h, v = classify_lines(lines, angle_threshold=30.0)
+        assert len(h) == 2
+        assert len(v) == 1

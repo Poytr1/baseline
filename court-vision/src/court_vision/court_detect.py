@@ -85,3 +85,45 @@ def detect_court_lines(
         x1, y1, x2, y2 = line[0]
         lines.append(((int(x1), int(y1)), (int(x2), int(y2))))
     return lines
+
+
+def classify_lines(
+    lines: list[tuple[tuple[int, int], tuple[int, int]]],
+    angle_threshold: float = 30.0,
+) -> tuple[
+    list[tuple[tuple[int, int], tuple[int, int]]],
+    list[tuple[tuple[int, int], tuple[int, int]]],
+]:
+    """Classify detected lines as horizontal or vertical.
+
+    Lines within `angle_threshold` degrees of horizontal (0°) are
+    classified as horizontal. Lines within `angle_threshold` degrees
+    of vertical (90°) are classified as vertical. Diagonal lines
+    (between the two thresholds) are discarded.
+
+    Args:
+        lines: List of line segments as ((x1, y1), (x2, y2)).
+        angle_threshold: Maximum deviation from axis in degrees.
+
+    Returns:
+        Tuple of (horizontal_lines, vertical_lines).
+    """
+    horizontal = []
+    vertical = []
+
+    for (x1, y1), (x2, y2) in lines:
+        dx = x2 - x1
+        dy = y2 - y1
+        angle = abs(np.degrees(np.arctan2(dy, dx)))
+
+        # Normalize to 0-90 range
+        if angle > 90:
+            angle = 180 - angle
+
+        if angle <= angle_threshold:
+            horizontal.append(((x1, y1), (x2, y2)))
+        elif angle >= (90 - angle_threshold):
+            vertical.append(((x1, y1), (x2, y2)))
+        # else: diagonal — discard
+
+    return horizontal, vertical
