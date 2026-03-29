@@ -14,11 +14,7 @@ def process(
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to court-vision.yaml config file."),
     scene_weights: Optional[Path] = typer.Option(None, "--scene-weights", help="Path to fine-tuned scene filter weights."),
 ) -> None:
-    """Process a tennis match video through the CV pipeline.
-
-    Phase 1: extracts frames and classifies gameplay segments.
-    JSON/CSV export will be added in Phase 2.
-    """
+    """Process a tennis match video through the CV pipeline."""
     from court_vision.pipeline import run_pipeline
 
     result = run_pipeline(
@@ -32,6 +28,10 @@ def process(
 
     for i, seg in enumerate(result.gameplay_segments, 1):
         typer.echo(f"  Segment {i}: frames {seg.start_frame}-{seg.end_frame} ({seg.start_time_s:.1f}s - {seg.end_time_s:.1f}s)")
+
+    if result.court_detections:
+        successful = sum(1 for d in result.court_detections if d.success)
+        typer.echo(f"Court detection: {successful}/{len(result.court_detections)} segments with homography")
 
 
 @app.command()
