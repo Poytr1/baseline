@@ -1,5 +1,13 @@
 """Court detection — line detection, keypoint extraction, homography."""
 
+from dataclasses import dataclass
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from court_vision.scene_filter import GameplaySegment
+
 # Standard tennis court dimensions in meters.
 # Origin (0, 0) = center of net.
 # X-axis: parallel to net, positive = right when facing far end.
@@ -38,10 +46,6 @@ COURT_KEYPOINTS: dict[str, tuple[float, float]] = {
     "baseline_near_right_singles": (_SINGLES_WIDTH_HALF, -_BASELINE_DIST),
     "baseline_near_right_doubles": (_DOUBLES_WIDTH_HALF, -_BASELINE_DIST),
 }
-
-
-import cv2
-import numpy as np
 
 
 def detect_court_lines(
@@ -305,3 +309,103 @@ def match_keypoints_to_court(
     ], dtype=np.float64)
 
     return pixel_pts, court_pts
+
+
+@dataclass
+class CourtDetectionResult:
+    """Result of court detection on a single frame."""
+
+    success: bool
+    homography: np.ndarray | None = None
+    pixel_keypoints: list[tuple[float, float]] | None = None
+    num_lines_detected: int = 0
+
+
+def detect_court(frame: np.ndarray) -> CourtDetectionResult:
+    """Detect the tennis court in a frame and compute the homography.
+
+    Full pipeline: detect lines -> classify -> extract keypoints ->
+    match to court -> compute homography.
+
+    Args:
+        frame: BGR image as numpy array (H, W, 3).
+
+    Returns:
+        CourtDetectionResult with homography if successful.
+    """
+    # Step 1: Detect lines
+    lines = detect_court_lines(frame)
+    if not lines:
+        return CourtDetectionResult(success=False, num_lines_detected=0)
+
+    # Step 2: Classify into horizontal and vertical
+    horizontal, vertical = classify_lines(lines)
+    if len(horizontal) < 2 or len(vertical) < 2:
+        return CourtDetectionResult(success=False, num_lines_detected=len(lines))
+
+    # Step 3: Extract keypoints from intersections
+    h, w = frame.shape[:2]
+    keypoints = extract_keypoints(horizontal, vertical, frame_width=w, frame_height=h)
+    if len(keypoints) < 4:
+        return CourtDetectionResult(success=False, num_lines_detected=len(lines))
+
+    # Step 4: Match pixel keypoints to court coordinates
+    match_result = match_keypoints_to_court(keypoints)
+    if match_result is None:
+        return CourtDetectionResult(
+            success=False,
+            pixel_keypoints=keypoints,
+            num_lines_detected=len(lines),
+        )
+
+    pixel_pts, court_pts = match_result
+
+    # Step 5: Compute homography
+    H = compute_homography(pixel_pts, court_pts)
+    if H is None:
+        return CourtDetectionResult(
+            success=False,
+            pixel_keypoints=keypoints,
+            num_lines_detected=len(lines),
+        )
+
+    return CourtDetectionResult(
+        success=True,
+        homography=H,
+        pixel_keypoints=keypoints,
+        num_lines_detected=len(lines),
+    )
+
+
+def compute_segment_homographies(
+    frames_dir: Path,
+    segments: list[GameplaySegment],
+) -> list[CourtDetectionResult]:
+    """Compute a homography for each gameplay segment.
+
+    Samples the middle frame of each segment for court detection,
+    since the camera position is generally stable within a single point.
+
+    Args:
+        frames_dir: Directory containing frame_NNNNNN.jpg files.
+        segments: List of gameplay segments from scene filter.
+
+    Returns:
+        List of CourtDetectionResult, one per segment.
+    """
+    results: list[CourtDetectionResult] = []
+
+    for segment in segments:
+        # Sample the middle frame of the segment
+        mid_frame = (segment.start_frame + segment.end_frame) // 2
+        frame_path = frames_dir / f"frame_{mid_frame:06d}.jpg"
+
+        frame = cv2.imread(str(frame_path))
+        if frame is None:
+            results.append(CourtDetectionResult(success=False, num_lines_detected=0))
+            continue
+
+        result = detect_court(frame)
+        results.append(result)
+
+    return results

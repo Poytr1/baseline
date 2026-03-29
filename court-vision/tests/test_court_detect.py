@@ -312,3 +312,91 @@ class TestMatchKeypoints:
         result = match_keypoints_to_court(pixel_keypoints)
 
         assert result is None
+
+
+class TestDetectCourt:
+    def test_returns_court_detection_result(self):
+        """Full detect_court returns a CourtDetectionResult with homography."""
+        from court_vision.court_detect import CourtDetectionResult, detect_court
+
+        img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)
+        img = _draw_court_lines(img)
+
+        result = detect_court(img)
+
+        assert isinstance(result, CourtDetectionResult)
+        assert isinstance(result.success, bool)
+
+    def test_successful_detection_has_homography(self):
+        """Successful detection includes a 3x3 homography matrix."""
+        from court_vision.court_detect import detect_court
+
+        img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)
+        img = _draw_court_lines(img)
+
+        result = detect_court(img)
+
+        if result.success:
+            assert result.homography is not None
+            assert result.homography.shape == (3, 3)
+            assert result.pixel_keypoints is not None
+            assert len(result.pixel_keypoints) >= 4
+
+    def test_failed_detection_on_blank_image(self):
+        """Detection fails gracefully on an image with no court lines."""
+        from court_vision.court_detect import detect_court
+
+        img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)
+
+        result = detect_court(img)
+
+        assert result.success is False
+        assert result.homography is None
+
+
+class TestComputeSegmentHomographies:
+    def test_returns_one_result_per_segment(self, tmp_path):
+        """Computes one CourtDetectionResult per gameplay segment."""
+        from court_vision.court_detect import compute_segment_homographies
+        from court_vision.scene_filter import GameplaySegment
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+
+        for i in range(10):
+            img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)
+            img = _draw_court_lines(img)
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
+
+        segments = [
+            GameplaySegment(start_frame=0, end_frame=4, start_time_s=0.0, end_time_s=0.13, frame_count=5),
+            GameplaySegment(start_frame=7, end_frame=9, start_time_s=0.23, end_time_s=0.3, frame_count=3),
+        ]
+
+        results = compute_segment_homographies(frames_dir, segments)
+
+        assert len(results) == 2
+
+    def test_uses_middle_frame_of_segment(self, tmp_path):
+        """Samples the middle frame of each segment for homography."""
+        from unittest.mock import patch as mock_patch
+        from court_vision.court_detect import compute_segment_homographies, CourtDetectionResult
+        from court_vision.scene_filter import GameplaySegment
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+
+        for i in range(10):
+            img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
+
+        segments = [
+            GameplaySegment(start_frame=0, end_frame=8, start_time_s=0.0, end_time_s=0.27, frame_count=9),
+        ]
+
+        with mock_patch("court_vision.court_detect.detect_court") as mock_detect:
+            mock_detect.return_value = CourtDetectionResult(success=False, num_lines_detected=0)
+            compute_segment_homographies(frames_dir, segments)
+
+            call_args = mock_detect.call_args
+            assert call_args is not None
