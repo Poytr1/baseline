@@ -122,3 +122,63 @@ class TestDetectPlayersInFrame:
 
         assert len(players) == 1
         assert players[0].bbox[0] == 100.0
+
+
+from court_vision.player_detect import assign_player_roles, map_player_to_court
+
+
+class TestAssignPlayerRoles:
+    def test_assigns_near_and_far(self):
+        """Player at bottom of frame = near, top = far."""
+        players = [
+            PlayerDetection(frame_index=0, bbox=(100.0, 50.0, 200.0, 200.0), confidence=0.9),
+            PlayerDetection(frame_index=0, bbox=(100.0, 400.0, 200.0, 600.0), confidence=0.9),
+        ]
+        assigned = assign_player_roles(players)
+        assert len(assigned) == 2
+        bottom_player = [p for p in assigned if p.bbox[3] == 600.0][0]
+        top_player = [p for p in assigned if p.bbox[3] == 200.0][0]
+        assert bottom_player.role == "near_player"
+        assert top_player.role == "far_player"
+
+    def test_single_player_defaults_to_near(self):
+        """Single player is assigned near_player role."""
+        players = [
+            PlayerDetection(frame_index=0, bbox=(100.0, 400.0, 200.0, 600.0), confidence=0.9),
+        ]
+        assigned = assign_player_roles(players)
+        assert len(assigned) == 1
+        assert assigned[0].role == "near_player"
+
+    def test_empty_list_returns_empty(self):
+        """Empty player list returns empty list."""
+        assert assign_player_roles([]) == []
+
+    def test_more_than_two_players_takes_top_two_by_confidence(self):
+        """When more than 2 players detected, keep 2 highest confidence."""
+        players = [
+            PlayerDetection(frame_index=0, bbox=(100.0, 50.0, 200.0, 200.0), confidence=0.5),
+            PlayerDetection(frame_index=0, bbox=(100.0, 400.0, 200.0, 600.0), confidence=0.9),
+            PlayerDetection(frame_index=0, bbox=(300.0, 300.0, 400.0, 500.0), confidence=0.7),
+        ]
+        assigned = assign_player_roles(players)
+        assert len(assigned) == 2
+        confs = sorted([p.confidence for p in assigned], reverse=True)
+        assert confs == [0.9, 0.7]
+
+
+class TestMapPlayerToCourt:
+    def test_maps_bbox_center_bottom_to_court(self):
+        """Maps center-bottom of bounding box (feet position) to court coords."""
+        H = np.eye(3, dtype=np.float64)
+        det = PlayerDetection(frame_index=0, bbox=(100.0, 200.0, 200.0, 500.0), confidence=0.9)
+        court_pos = map_player_to_court(det, H)
+        assert court_pos is not None
+        assert abs(court_pos[0] - 150.0) < 0.1
+        assert abs(court_pos[1] - 500.0) < 0.1
+
+    def test_returns_none_for_none_homography(self):
+        """Returns None when homography is None."""
+        det = PlayerDetection(frame_index=0, bbox=(100.0, 200.0, 200.0, 500.0), confidence=0.9)
+        result = map_player_to_court(det, None)
+        assert result is None

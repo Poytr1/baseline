@@ -1,9 +1,9 @@
 /**
- * Near-real-time ATP data backfill from TennisExplorer.com
+ * Near-real-time ATP + WTA data backfill from TennisExplorer.com
  *
  * Scrapes server-rendered HTML to get match results within hours of completion.
  * Supplements the existing tennis-data.co.uk Excel scraper (scrape-atp.ts)
- * which has ~1 week lag.
+ * which has ~1 week lag and only covers ATP.
  *
  * Usage:
  *   npm run scrape-te              # scrape last 7 days
@@ -30,6 +30,8 @@ const SKIP_PATTERNS = [
   /utr pro/i,
   /itf/i,
   /davis cup/i,
+  /billie jean king cup/i,
+  /bjk cup/i,
   /laver cup/i,
   /united cup/i,
   /exhibition/i,
@@ -358,6 +360,33 @@ async function resolvePlayerId(
   return id;
 }
 
+// ── Tour config ──────────────────────────────────────────────────────
+
+interface TourConfig {
+  key: string; // "atp" or "wta"
+  teType: string; // TE results page type param
+  teCategory: string; // TE URL path segment
+  hrefPattern: RegExp; // regex to match tournament links
+  label: string; // display label
+}
+
+const TOUR_CONFIGS: TourConfig[] = [
+  {
+    key: "atp",
+    teType: "atp-single",
+    teCategory: "atp-men",
+    hrefPattern: /^\/(.+?)\/\d{4}\/atp-men\//,
+    label: "ATP",
+  },
+  {
+    key: "wta",
+    teType: "wta-single",
+    teCategory: "wta-women",
+    hrefPattern: /^\/(.+?)\/\d{4}\/wta-women\//,
+    label: "WTA",
+  },
+];
+
 // ── Scraping ──────────────────────────────────────────────────────────
 
 /**
@@ -367,22 +396,21 @@ async function discoverTournaments(
   year: number,
   month: number,
   day: number,
+  tour: TourConfig,
 ): Promise<string[]> {
-  const url = `${BASE_URL}/results/?type=atp-single&year=${year}&month=${String(month).padStart(2, "0")}&day=${String(day).padStart(2, "0")}`;
+  const url = `${BASE_URL}/results/?type=${tour.teType}&year=${year}&month=${String(month).padStart(2, "0")}&day=${String(day).padStart(2, "0")}`;
   const html = await fetchPage(url);
   if (!html) return [];
 
   const $ = cheerio.load(html);
   const slugs = new Set<string>();
 
-  $('tr.head.flags a[href*="/atp-men/"]').each((_, el) => {
+  $(`tr.head.flags a[href*="/${tour.teCategory}/"]`).each((_, el) => {
     const href = $(el).attr("href");
     if (!href) return;
-    // Extract tournament slug: /indian-wells/2026/atp-men/ -> indian-wells
-    const match = href.match(/^\/(.+?)\/\d{4}\/atp-men\//);
+    const match = href.match(tour.hrefPattern);
     if (match) {
       const slug = match[1];
-      // Skip challengers, futures, exhibitions
       const name = $(el).text().trim();
       if (SKIP_PATTERNS.some((p) => p.test(name) || p.test(slug))) return;
       slugs.add(slug);
@@ -398,8 +426,9 @@ async function discoverTournaments(
 async function scrapeTournament(
   slug: string,
   year: number,
+  tour: TourConfig,
 ): Promise<TournamentInfo | null> {
-  const url = `${BASE_URL}/${slug}/${year}/atp-men/`;
+  const url = `${BASE_URL}/${slug}/${year}/${tour.teCategory}/`;
   const html = await fetchPage(url);
   if (!html) return null;
 
@@ -626,16 +655,17 @@ async function resolveTourneyId(
   teName: string,
   teSlug: string,
   year: number,
+  tourKey: string,
 ): Promise<string> {
-  const key = `${teSlug}-${year}`;
+  const key = `${tourKey}-${teSlug}-${year}`;
   if (tourneyIdCache.has(key)) return tourneyIdCache.get(key)!;
 
   // Try to find existing tournament by name match
   const existing = await prisma.tournament.findFirst({
     where: {
-      tour: "atp",
+      tour: tourKey,
       name: { contains: teName, mode: "insensitive" },
-      id: { startsWith: `atp-${year}` },
+      id: { startsWith: `${tourKey}-${year}` },
     },
     select: { id: true },
   });
@@ -648,7 +678,7 @@ async function resolveTourneyId(
   // Try prior year with same name to get the numeric ID
   const priorYear = await prisma.tournament.findFirst({
     where: {
-      tour: "atp",
+      tour: tourKey,
       name: { contains: teName, mode: "insensitive" },
     },
     select: { id: true },
@@ -659,14 +689,14 @@ async function resolveTourneyId(
   if (priorYear) {
     const parts = priorYear.id.split("-");
     const numId = parts[parts.length - 1];
-    tourneyId = `atp-${year}-${numId}`;
+    tourneyId = `${tourKey}-${year}-${numId}`;
   } else {
     // Generate a new ID from the slug
     const numericSlug = teSlug
       .split("")
       .reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0);
     const paddedNum = String(Math.abs(numericSlug % 10000)).padStart(4, "0");
-    tourneyId = `atp-${year}-${paddedNum}`;
+    tourneyId = `${tourKey}-${year}-${paddedNum}`;
   }
 
   tourneyIdCache.set(key, tourneyId);
@@ -700,22 +730,38 @@ const GRAND_SLAM_NAMES = [
   "us open",
 ];
 
-function detectLevel(name: string): string | null {
+const WTA_PREMIER_NAMES = [
+  "indian wells",
+  "miami",
+  "madrid",
+  "rome",
+  "beijing",
+  "canadian",
+  "cincinnati",
+  "bnp paribas",
+  "wta finals",
+  "wta 1000",
+];
+
+function detectLevel(name: string, tourKey: string): string | null {
   const lower = name.toLowerCase();
   if (GRAND_SLAM_NAMES.some((gs) => lower.includes(gs))) return "G";
   if (MASTERS_NAMES.some((m) => lower.includes(m))) return "M";
+  if (tourKey === "wta" && WTA_PREMIER_NAMES.some((m) => lower.includes(m)))
+    return "M";
   if (lower.includes("masters cup") || lower.includes("atp finals"))
     return "F";
+  if (lower.includes("wta finals")) return "F";
   return "A";
 }
 
 // ── Main sync logic ────────────────────────────────────────────────
 
-async function syncDay(year: number, month: number, day: number): Promise<number> {
+async function syncDay(year: number, month: number, day: number, tour: TourConfig): Promise<number> {
   const dateLabel = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 
   // Discover tournaments with results on this day
-  const tournamentSlugs = await discoverTournaments(year, month, day);
+  const tournamentSlugs = await discoverTournaments(year, month, day, tour);
   if (tournamentSlugs.length === 0) return 0;
 
   await sleep(RATE_LIMIT_MS);
@@ -724,7 +770,7 @@ async function syncDay(year: number, month: number, day: number): Promise<number
 
   for (const slug of tournamentSlugs) {
     // Scrape tournament page
-    const tournament = await scrapeTournament(slug, year);
+    const tournament = await scrapeTournament(slug, year, tour);
     if (!tournament || tournament.matches.length === 0) {
       await sleep(RATE_LIMIT_MS);
       continue;
@@ -735,8 +781,9 @@ async function syncDay(year: number, month: number, day: number): Promise<number
       tournament.name,
       slug,
       year,
+      tour.key,
     );
-    const level = detectLevel(tournament.name);
+    const level = detectLevel(tournament.name, tour.key);
 
     // Compute YYYYMMDD date for the tournament
     const dateYMD = `${year}${String(month).padStart(2, "0")}${String(day).padStart(2, "0")}`;
@@ -749,7 +796,7 @@ async function syncDay(year: number, month: number, day: number): Promise<number
         surface: tournament.surface,
         level,
         date: dateYMD,
-        tour: "atp",
+        tour: tour.key,
       },
       create: {
         id: tourneyId,
@@ -757,7 +804,7 @@ async function syncDay(year: number, month: number, day: number): Promise<number
         surface: tournament.surface,
         level,
         date: dateYMD,
-        tour: "atp",
+        tour: tour.key,
       },
     });
 
@@ -780,7 +827,7 @@ async function syncDay(year: number, month: number, day: number): Promise<number
       const loserId = await resolvePlayerId(loserName, loserSlug);
       if (winnerId === loserId) continue;
 
-      const bestOf = level === "G" ? 5 : 3;
+      const bestOf = level === "G" ? (tour.key === "wta" ? 3 : 5) : 3;
       const winnerSetsWon = p1Won ? m.player1Sets : m.player2Sets;
       const score = buildScoreFromSets(m.sets, p1Won, m.isWalkover, winnerSetsWon, bestOf);
 
@@ -817,7 +864,7 @@ async function syncDay(year: number, month: number, day: number): Promise<number
           bestOf,
           round: m.round,
           surface: tournament.surface,
-          tour: "atp",
+          tour: tour.key,
           winnerRank: null,
           winnerRankPoints: null,
           loserRank: null,
@@ -929,33 +976,49 @@ async function syncRankings(): Promise<void> {
 // ── Main ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  console.log("=== ATP Data Sync (TennisExplorer) ===\n");
+  console.log("=== ATP + WTA Data Sync (TennisExplorer) ===\n");
 
   // Parse arguments
   const daysArg = process.argv.indexOf("--days");
   const days = daysArg !== -1 ? parseInt(process.argv[daysArg + 1], 10) : 7;
 
-  console.log(`Syncing last ${days} days...\n`);
+  const tourArg = process.argv.indexOf("--tour");
+  const tourFilter = tourArg !== -1 ? process.argv[tourArg + 1]?.toLowerCase() : null;
 
-  // Build player cache
-  console.log("Building player cache...");
-  await buildPlayerCache();
+  const toursToSync = tourFilter
+    ? TOUR_CONFIGS.filter((t) => t.key === tourFilter)
+    : TOUR_CONFIGS;
 
-  let totalImported = 0;
-
-  // Iterate backwards from today
-  for (let d = 0; d < days; d++) {
-    const date = new Date();
-    date.setDate(date.getDate() - d);
-    const year = date.getFullYear();
-    const month = date.getMonth() + 1;
-    const day = date.getDate();
-
-    const imported = await syncDay(year, month, day);
-    totalImported += imported;
+  if (toursToSync.length === 0) {
+    console.error(`Unknown tour: ${tourFilter}. Use "atp" or "wta".`);
+    process.exit(1);
   }
 
-  console.log(`\n=== Match sync complete: ${totalImported} new matches ===`);
+  console.log(`Syncing last ${days} days for ${toursToSync.map((t) => t.label).join(" + ")}...\n`);
+
+  for (const tour of toursToSync) {
+    console.log(`--- ${tour.label} Matches ---`);
+
+    // Build player cache for this tour
+    console.log("Building player cache...");
+    await buildPlayerCache(tour.key);
+
+    let totalImported = 0;
+
+    // Iterate backwards from today
+    for (let d = 0; d < days; d++) {
+      const date = new Date();
+      date.setDate(date.getDate() - d);
+      const year = date.getFullYear();
+      const month = date.getMonth() + 1;
+      const day = date.getDate();
+
+      const imported = await syncDay(year, month, day, tour);
+      totalImported += imported;
+    }
+
+    console.log(`  ${tour.label} match sync complete: ${totalImported} new matches\n`);
+  }
 
   // Sync rankings
   await syncRankings();
