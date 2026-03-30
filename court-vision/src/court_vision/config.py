@@ -11,6 +11,8 @@ class PipelineSettings(BaseModel):
     fps_override: int | None = None
     confidence_threshold: float = 0.7
     max_interpolation_gap_s: float = 0.5
+    scene_filter_mode: str = "heuristic"  # "heuristic" or "ml"
+    gameplay_threshold: float = 0.45
 
 
 class OutputSettings(BaseModel):

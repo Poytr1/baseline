@@ -41,7 +41,11 @@ class TestRunPipeline:
         video_path = tmp_path / "test.mp4"
         video_path.touch()
 
-        mock_load_config.return_value = PipelineConfig()
+        from court_vision.config import PipelineSettings
+
+        mock_load_config.return_value = PipelineConfig(
+            pipeline=PipelineSettings(scene_filter_mode="ml")
+        )
         mock_get_device.return_value = torch.device("cpu")
         mock_load_model.return_value = MagicMock()
         mock_extract.return_value = FrameSequence(
@@ -100,7 +104,11 @@ class TestRunPipeline:
         from court_vision.config import PipelineConfig
         from court_vision.ingest import FrameSequence
 
-        mock_load_config.return_value = PipelineConfig()
+        from court_vision.config import PipelineSettings
+
+        mock_load_config.return_value = PipelineConfig(
+            pipeline=PipelineSettings(scene_filter_mode="ml")
+        )
         mock_get_device.return_value = torch.device("cpu")
         mock_load_model.return_value = MagicMock()
         downloaded = tmp_path / "video.mp4"
@@ -154,7 +162,7 @@ class TestRunPipelineWithCourtDetection:
         """Pipeline calls compute_segment_homographies after scene filter."""
         import torch
 
-        from court_vision.config import PipelineConfig
+        from court_vision.config import PipelineConfig, PipelineSettings
         from court_vision.court_detect import CourtDetectionResult
         from court_vision.ingest import FrameSequence
         from court_vision.scene_filter import GameplaySegment
@@ -162,7 +170,9 @@ class TestRunPipelineWithCourtDetection:
         video_path = tmp_path / "test.mp4"
         video_path.touch()
 
-        mock_load_config.return_value = PipelineConfig()
+        mock_load_config.return_value = PipelineConfig(
+            pipeline=PipelineSettings(scene_filter_mode="ml")
+        )
         mock_get_device.return_value = torch.device("cpu")
         mock_load_model.return_value = MagicMock()
 
@@ -217,7 +227,7 @@ class TestRunPipelineWithTracking:
         """Pipeline calls track_segment after court detection."""
         import torch
 
-        from court_vision.config import PipelineConfig
+        from court_vision.config import PipelineConfig, PipelineSettings
         from court_vision.court_detect import CourtDetectionResult
         from court_vision.ingest import FrameSequence
         from court_vision.player_detect import FrameTrackingResult
@@ -229,7 +239,9 @@ class TestRunPipelineWithTracking:
         frames_dir = tmp_path / "frames"
         frames_dir.mkdir()
 
-        mock_load_config.return_value = PipelineConfig()
+        mock_load_config.return_value = PipelineConfig(
+            pipeline=PipelineSettings(scene_filter_mode="ml")
+        )
         mock_get_device.return_value = torch.device("cpu")
         mock_load_model.return_value = MagicMock()
         mock_extract.return_value = FrameSequence(
@@ -283,7 +295,7 @@ class TestRunPipelineWithShotClassification:
         """Pipeline calls build_match_data after tracking."""
         import torch
 
-        from court_vision.config import PipelineConfig
+        from court_vision.config import PipelineConfig, PipelineSettings
         from court_vision.court_detect import CourtDetectionResult
         from court_vision.ingest import FrameSequence
         from court_vision.scene_filter import GameplaySegment
@@ -294,7 +306,9 @@ class TestRunPipelineWithShotClassification:
         frames_dir = tmp_path / "frames"
         frames_dir.mkdir()
 
-        mock_load_config.return_value = PipelineConfig()
+        mock_load_config.return_value = PipelineConfig(
+            pipeline=PipelineSettings(scene_filter_mode="ml")
+        )
         mock_get_device.return_value = torch.device("cpu")
         mock_load_model.return_value = MagicMock()
         mock_extract.return_value = FrameSequence(
@@ -316,3 +330,57 @@ class TestRunPipelineWithShotClassification:
 
         mock_build_match.assert_called_once()
         assert result.match_data is not None
+
+
+class TestRunPipelineWithHeuristicFilter:
+    @patch("court_vision.pipeline.build_match_data")
+    @patch("court_vision.pipeline.track_segment")
+    @patch("court_vision.pipeline.compute_segment_homographies")
+    @patch("court_vision.pipeline.extract_frames")
+    @patch("court_vision.pipeline.filter_gameplay_segments")
+    @patch("court_vision.pipeline.load_scene_model")
+    @patch("court_vision.pipeline.get_device")
+    @patch("court_vision.pipeline.load_config")
+    def test_heuristic_mode_uses_heuristic_filter(
+        self,
+        mock_load_config: MagicMock,
+        mock_get_device: MagicMock,
+        mock_load_model: MagicMock,
+        mock_filter: MagicMock,
+        mock_extract: MagicMock,
+        mock_homographies: MagicMock,
+        mock_track: MagicMock,
+        mock_build_match: MagicMock,
+        tmp_path: Path,
+    ):
+        """Pipeline uses heuristic filter when scene_filter_mode='heuristic'."""
+        import torch
+
+        from court_vision.config import PipelineConfig, PipelineSettings
+        from court_vision.ingest import FrameSequence
+        from court_vision.scene_filter import GameplaySegment
+
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+
+        config = PipelineConfig(pipeline=PipelineSettings(scene_filter_mode="heuristic"))
+        mock_load_config.return_value = config
+        mock_get_device.return_value = torch.device("cpu")
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        mock_extract.return_value = FrameSequence(
+            frames_dir=frames_dir, fps=30.0, total_frames=100, resolution=(1280, 720),
+        )
+        mock_filter.return_value = []
+        mock_homographies.return_value = []
+        mock_track.return_value = []
+        mock_build_match.return_value = None
+
+        with patch("court_vision.heuristic_scene_filter.classify_frames_heuristic", return_value=[]) as mock_heuristic, \
+             patch("court_vision.heuristic_scene_filter.smooth_classifications", return_value=[]) as mock_smooth:
+            result = run_pipeline(str(video_path), config_path=None)
+
+        # Heuristic filter should be used, ML model should NOT be loaded
+        mock_load_model.assert_not_called()
+        mock_heuristic.assert_called_once()
+        mock_smooth.assert_called_once()

@@ -74,8 +74,19 @@ def run_pipeline(
     frame_seq = extract_frames(video_path, target_resolution=resolution)
 
     # Stage 2: Scene Filter
-    model = load_scene_model(scene_weights_path, device)
-    results = classify_frames(frame_seq.frames_dir, frame_seq.total_frames, model, device)
+    if config.pipeline.scene_filter_mode == "heuristic":
+        from court_vision.heuristic_scene_filter import (
+            classify_frames_heuristic,
+            smooth_classifications,
+        )
+        results = classify_frames_heuristic(
+            frame_seq.frames_dir, frame_seq.total_frames,
+            gameplay_threshold=config.pipeline.gameplay_threshold,
+        )
+        results = smooth_classifications(results)
+    else:
+        model = load_scene_model(scene_weights_path, device)
+        results = classify_frames(frame_seq.frames_dir, frame_seq.total_frames, model, device)
     segments = filter_gameplay_segments(results, frame_seq.fps)
 
     gameplay_frames = sum(seg.frame_count for seg in segments)
