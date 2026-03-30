@@ -13,6 +13,7 @@ from court_vision.heuristic_scene_filter import (
     compute_court_spatial_score,
     compute_gameplay_score,
     compute_line_score,
+    smooth_classifications,
 )
 from court_vision.scene_filter import SceneCategory, SceneFilterResult
 
@@ -168,3 +169,39 @@ class TestClassifyFramesHeuristic:
         results = classify_frames_heuristic(frames_dir, total_frames=3)
         assert len(results) == 3
         assert all(isinstance(r, SceneFilterResult) for r in results)
+
+
+class TestSmoothClassifications:
+    def test_isolated_non_gameplay_flipped(self):
+        """G G T G G -> G G G G G."""
+        results = [
+            SceneFilterResult(i, SceneCategory.GAMEPLAY if i != 2 else SceneCategory.TRANSITION, 0.8)
+            for i in range(5)
+        ]
+        smoothed = smooth_classifications(results)
+        assert all(r.category == SceneCategory.GAMEPLAY for r in smoothed)
+
+    def test_isolated_gameplay_flipped(self):
+        """T T G T T -> T T T T T."""
+        results = [
+            SceneFilterResult(i, SceneCategory.GAMEPLAY if i == 2 else SceneCategory.TRANSITION, 0.8)
+            for i in range(5)
+        ]
+        smoothed = smooth_classifications(results)
+        assert all(r.category == SceneCategory.TRANSITION for r in smoothed)
+
+    def test_short_sequence_unchanged(self):
+        """Fewer than window_size frames returned as-is."""
+        results = [
+            SceneFilterResult(0, SceneCategory.GAMEPLAY, 0.8),
+            SceneFilterResult(1, SceneCategory.TRANSITION, 0.8),
+        ]
+        smoothed = smooth_classifications(results, window_size=5)
+        assert smoothed[0].category == SceneCategory.GAMEPLAY
+        assert smoothed[1].category == SceneCategory.TRANSITION
+
+    def test_long_gameplay_run_preserved(self):
+        """G G G G G stays unchanged."""
+        results = [SceneFilterResult(i, SceneCategory.GAMEPLAY, 0.8) for i in range(5)]
+        smoothed = smooth_classifications(results)
+        assert all(r.category == SceneCategory.GAMEPLAY for r in smoothed)

@@ -157,3 +157,39 @@ def classify_frames_heuristic(
         )
         results.append(result)
     return results
+
+
+def smooth_classifications(
+    results: list[SceneFilterResult],
+    window_size: int = 5,
+) -> list[SceneFilterResult]:
+    """Apply majority-vote smoothing over a sliding window."""
+    if len(results) < window_size:
+        return results
+
+    smoothed: list[SceneFilterResult] = []
+    half = window_size // 2
+    for i, result in enumerate(results):
+        start = max(0, i - half)
+        end = min(len(results), i + half + 1)
+        window = results[start:end]
+
+        gameplay_count = sum(1 for r in window if r.category == SceneCategory.GAMEPLAY)
+        majority_gameplay = gameplay_count > len(window) / 2
+
+        if majority_gameplay and result.category != SceneCategory.GAMEPLAY:
+            smoothed.append(SceneFilterResult(
+                frame_index=result.frame_index,
+                category=SceneCategory.GAMEPLAY,
+                confidence=result.confidence * 0.8,
+            ))
+        elif not majority_gameplay and result.category == SceneCategory.GAMEPLAY:
+            smoothed.append(SceneFilterResult(
+                frame_index=result.frame_index,
+                category=SceneCategory.TRANSITION,
+                confidence=result.confidence * 0.8,
+            ))
+        else:
+            smoothed.append(result)
+
+    return smoothed
