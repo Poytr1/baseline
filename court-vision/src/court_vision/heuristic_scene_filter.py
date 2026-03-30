@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from court_vision.court_detect import classify_lines, detect_court_lines
 from court_vision.scene_filter import SceneCategory, SceneFilterResult
 
 
@@ -22,3 +23,26 @@ def compute_court_color_ratio(frame: np.ndarray) -> float:
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = _get_court_color_mask(hsv)
     return float(np.count_nonzero(mask) / (frame.shape[0] * frame.shape[1]))
+
+
+def compute_line_score(frame: np.ndarray) -> float:
+    """Score based on detected white lines consistent with court geometry.
+
+    Reuses detect_court_lines from court_detect with relaxed thresholds
+    for higher recall at the scene filtering stage.
+    """
+    lines = detect_court_lines(
+        frame,
+        hough_threshold=60,
+        min_line_length=80,
+        max_line_gap=40,
+    )
+    if not lines:
+        return 0.0
+
+    horizontal, vertical = classify_lines(lines, angle_threshold=30.0)
+
+    line_density = min(len(lines) / 10.0, 1.0)
+    grid_bonus = 0.2 if len(horizontal) >= 1 and len(vertical) >= 1 else 0.0
+
+    return min(line_density + grid_bonus, 1.0)
