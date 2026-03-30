@@ -39,6 +39,44 @@ def process(
         typer.echo(f"Tracking: ball detected in {ball_count}/{len(result.tracking_results)} frames, "
                    f"players in {player_frames}/{len(result.tracking_results)} frames")
 
+    if result.match_data:
+        total_shots = sum(len(p.shots) for p in result.match_data.points)
+        typer.echo(f"Shot classification: {len(result.match_data.points)} points, {total_shots} shots detected")
+
+
+@app.command()
+def export(
+    match_json: Path = typer.Argument(help="Path to match data JSON file."),
+    format: str = typer.Option("json", "--format", "-f", help="Output format: json or csv."),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output file path."),
+) -> None:
+    """Export match data to JSON or CSV format."""
+    import json as json_module
+
+    from court_vision.export import export_csv, export_json
+    from court_vision.shot_classify import MatchData
+
+    with open(match_json) as f:
+        raw = json_module.load(f)
+
+    match = MatchData(
+        match_id=raw["match_id"],
+        source_url=raw["source_url"],
+        metadata=raw.get("metadata", {}),
+        points=[],
+    )
+
+    if output is None:
+        stem = match_json.stem
+        output = match_json.parent / f"{stem}_export.{format}"
+
+    if format == "csv":
+        export_csv(match, output)
+    else:
+        export_json(match, output)
+
+    typer.echo(f"Exported to {output}")
+
 
 @app.command()
 def version() -> None:

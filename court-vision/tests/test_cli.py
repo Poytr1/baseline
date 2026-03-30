@@ -1,5 +1,7 @@
 """Tests for the CLI entry point."""
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -86,3 +88,79 @@ class TestProcessCommandTrackingOutput:
         assert result.exit_code == 0
         assert "tracking" in result.output.lower() or "ball" in result.output.lower()
 
+
+class TestProcessCommandShotOutput:
+    @patch("court_vision.pipeline.run_pipeline")
+    def test_process_shows_shot_summary(self, mock_pipeline: MagicMock):
+        """Process command displays shot classification summary."""
+        from court_vision.scene_filter import GameplaySegment
+        from court_vision.shot_classify import MatchData, Point, Shot
+
+        mock_pipeline.return_value = MagicMock(
+            total_frames=100,
+            fps=30.0,
+            gameplay_segments=[
+                GameplaySegment(start_frame=0, end_frame=50, start_time_s=0.0, end_time_s=1.67, frame_count=51),
+            ],
+            gameplay_frame_count=51,
+            court_detections=[],
+            tracking_results=[],
+            match_data=MatchData(
+                match_id="test",
+                source_url="test.mp4",
+                metadata={},
+                points=[
+                    Point(
+                        point_number=1, start_frame=0, end_frame=50,
+                        start_time_s=0.0, end_time_s=1.67,
+                        server="near_player",
+                        shots=[
+                            Shot(shot_number=1, frame=10, time_s=0.33,
+                                 player="near_player", stroke="serve",
+                                 placement=None, confidence=0.8),
+                        ],
+                        outcome="winner", outcome_player="near_player",
+                        rally_length=1,
+                    ),
+                ],
+            ),
+        )
+
+        result = runner.invoke(app, ["process", "test.mp4"])
+
+        assert result.exit_code == 0
+        assert "shot" in result.output.lower() or "point" in result.output.lower()
+
+
+class TestExportCommand:
+    def test_export_json(self, tmp_path: Path):
+        """Export command writes JSON output."""
+        match_file = tmp_path / "match.json"
+        match_data = {
+            "match_id": "test", "source_url": "test.mp4",
+            "metadata": {}, "points": [],
+        }
+        match_file.write_text(json.dumps(match_data))
+        output_file = tmp_path / "out.json"
+
+        result = runner.invoke(app, ["export", str(match_file), "--format", "json",
+                                      "--output", str(output_file)])
+
+        assert result.exit_code == 0
+        assert "Exported" in result.output
+
+    def test_export_csv(self, tmp_path: Path):
+        """Export command writes CSV output."""
+        match_file = tmp_path / "match.json"
+        match_data = {
+            "match_id": "test", "source_url": "test.mp4",
+            "metadata": {}, "points": [],
+        }
+        match_file.write_text(json.dumps(match_data))
+        output_file = tmp_path / "out.csv"
+
+        result = runner.invoke(app, ["export", str(match_file), "--format", "csv",
+                                      "--output", str(output_file)])
+
+        assert result.exit_code == 0
+        assert "Exported" in result.output
