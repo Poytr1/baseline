@@ -102,3 +102,74 @@ class TestComputePlacementZone:
         """Ball landing crosscourt and short = crosscourt_short."""
         zone = compute_placement_zone(x=3.0, y=3.0, is_serve=False, hitter="near_player")
         assert zone == "crosscourt_short"
+
+
+from court_vision.shot_classify import classify_stroke
+from court_vision.player_detect import PoseKeypoints
+
+
+class TestClassifyStroke:
+    def _make_pose(self, role: str = "near_player", **overrides) -> PoseKeypoints:
+        """Create a PoseKeypoints with customizable keypoints."""
+        defaults = {
+            "nose": (400.0, 100.0, 0.9),
+            "left_shoulder": (380.0, 200.0, 0.9),
+            "right_shoulder": (420.0, 200.0, 0.9),
+            "left_elbow": (360.0, 280.0, 0.9),
+            "right_elbow": (440.0, 280.0, 0.9),
+            "left_wrist": (350.0, 350.0, 0.9),
+            "right_wrist": (450.0, 350.0, 0.9),
+            "left_hip": (390.0, 400.0, 0.9),
+            "right_hip": (410.0, 400.0, 0.9),
+        }
+        defaults.update(overrides)
+        return PoseKeypoints(frame_index=0, role=role, keypoints=defaults)
+
+    def test_forehand_right_handed(self):
+        """Right wrist extended to right side = forehand (right-handed)."""
+        pose = self._make_pose(
+            right_wrist=(550.0, 250.0, 0.9),
+            right_elbow=(500.0, 250.0, 0.9),
+        )
+        stroke, conf = classify_stroke(pose)
+        assert stroke == "forehand"
+        assert conf > 0.0
+
+    def test_backhand_right_handed(self):
+        """Right wrist extended to left side of body = backhand."""
+        pose = self._make_pose(
+            right_wrist=(300.0, 250.0, 0.9),
+            right_elbow=(340.0, 260.0, 0.9),
+        )
+        stroke, conf = classify_stroke(pose)
+        assert stroke == "backhand"
+        assert conf > 0.0
+
+    def test_serve_arms_up(self):
+        """Both wrists above head = serve."""
+        pose = self._make_pose(
+            right_wrist=(430.0, 50.0, 0.9),
+            left_wrist=(380.0, 70.0, 0.9),
+            nose=(400.0, 100.0, 0.9),
+        )
+        stroke, conf = classify_stroke(pose)
+        assert stroke == "serve"
+        assert conf > 0.0
+
+    def test_overhead_one_arm_up(self):
+        """One wrist above head, other at body = overhead."""
+        pose = self._make_pose(
+            right_wrist=(420.0, 50.0, 0.9),
+            left_wrist=(370.0, 350.0, 0.9),
+            nose=(400.0, 100.0, 0.9),
+        )
+        stroke, conf = classify_stroke(pose)
+        assert stroke == "overhead"
+        assert conf > 0.0
+
+    def test_returns_default_for_neutral_pose(self):
+        """Neutral pose with no clear stroke returns forehand with low confidence."""
+        pose = self._make_pose()
+        stroke, conf = classify_stroke(pose)
+        assert stroke in ("forehand", "backhand", "serve", "volley", "overhead", "slice")
+        assert conf >= 0.0

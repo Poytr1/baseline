@@ -124,3 +124,74 @@ def _compute_rally_zone(x: float, y: float, hitter: str) -> str:
         direction = "crosscourt" if x < 0 else "down_the_line"
 
     return f"{direction}_{depth}"
+
+
+from court_vision.player_detect import PoseKeypoints
+
+
+def classify_stroke(
+    pose: PoseKeypoints,
+) -> tuple[str, float]:
+    """Classify the stroke type from pose keypoints at ball contact.
+
+    Rule-based heuristics using wrist, elbow, and shoulder positions:
+    - Serve: both wrists above head
+    - Overhead: dominant wrist above head, other at body
+    - Forehand: dominant wrist extended to dominant side
+    - Backhand: dominant wrist extended to non-dominant side
+    - Volley: compact arm position, wrists near shoulders
+    - Slice: dominant wrist below elbow with arm extended
+
+    Assumes right-handed player for MVP.
+
+    Args:
+        pose: PoseKeypoints from MediaPipe.
+
+    Returns:
+        Tuple of (stroke_type, confidence).
+    """
+    kp = pose.keypoints
+
+    # Extract key positions (with safe defaults)
+    nose = kp.get("nose", (400.0, 200.0, 0.0))
+    r_wrist = kp.get("right_wrist", (450.0, 350.0, 0.0))
+    l_wrist = kp.get("left_wrist", (350.0, 350.0, 0.0))
+    r_elbow = kp.get("right_elbow", (440.0, 280.0, 0.0))
+    r_shoulder = kp.get("right_shoulder", (420.0, 200.0, 0.0))
+    l_shoulder = kp.get("left_shoulder", (380.0, 200.0, 0.0))
+    r_hip = kp.get("right_hip", (410.0, 400.0, 0.0))
+
+    nose_y = nose[1]
+    r_wrist_x, r_wrist_y = r_wrist[0], r_wrist[1]
+    l_wrist_y = l_wrist[1]
+    r_elbow_y = r_elbow[1]
+    r_shoulder_x = r_shoulder[0]
+    l_shoulder_x = l_shoulder[0]
+    body_center_x = (r_shoulder_x + l_shoulder_x) / 2
+
+    # Rule 1: Serve — both wrists above nose
+    if r_wrist_y < nose_y and l_wrist_y < nose_y:
+        return ("serve", 0.8)
+
+    # Rule 2: Overhead — dominant wrist above nose, other below
+    if r_wrist_y < nose_y and l_wrist_y > nose_y:
+        return ("overhead", 0.7)
+
+    # Rule 3: Volley — wrist close to shoulder height, compact position
+    wrist_shoulder_dist = abs(r_wrist_y - r_shoulder[1])
+    wrist_body_dist_x = abs(r_wrist_x - body_center_x)
+    if wrist_shoulder_dist < 60 and wrist_body_dist_x < 80:
+        return ("volley", 0.6)
+
+    # Rule 4: Slice — wrist below elbow with arm extended sideways
+    if r_wrist_y > r_elbow_y and wrist_body_dist_x > 80:
+        return ("slice", 0.6)
+
+    # Rule 5: Forehand vs Backhand — wrist side relative to body center
+    if r_wrist_x > body_center_x + 30:
+        return ("forehand", 0.7)
+    elif r_wrist_x < body_center_x - 30:
+        return ("backhand", 0.7)
+
+    # Default: forehand with low confidence
+    return ("forehand", 0.4)
