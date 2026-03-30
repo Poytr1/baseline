@@ -137,3 +137,34 @@ class TestInterpolateGaps:
         result = interpolate_gaps(dets, fps=30.0, max_gap_s=0.5)
         assert len(result) == 1
         assert result[0].interpolated is False
+
+
+class TestMapBallToCourt:
+    def _identity_homography(self) -> np.ndarray:
+        """Returns an identity homography (pixel = court coords)."""
+        return np.eye(3, dtype=np.float64)
+
+    def test_maps_detection_to_court_coords(self):
+        """Maps a ball detection's pixel coords to court coords via homography."""
+        from court_vision.ball_tracker import map_ball_to_court
+        H = self._identity_homography()
+        det = BallDetection(frame_index=0, x=100.0, y=200.0, confidence=0.9)
+        court_x, court_y = map_ball_to_court(det, H)
+        assert abs(court_x - 100.0) < 0.1
+        assert abs(court_y - 200.0) < 0.1
+
+    def test_returns_none_for_none_homography(self):
+        """Returns None if homography is None."""
+        from court_vision.ball_tracker import map_ball_to_court
+        det = BallDetection(frame_index=0, x=100.0, y=200.0, confidence=0.9)
+        result = map_ball_to_court(det, None)
+        assert result is None
+
+    def test_works_with_scaling_homography(self):
+        """Correctly applies a scaling homography."""
+        from court_vision.ball_tracker import map_ball_to_court
+        H = np.array([[2.0, 0, 0], [0, 3.0, 0], [0, 0, 1.0]], dtype=np.float64)
+        det = BallDetection(frame_index=0, x=10.0, y=20.0, confidence=0.9)
+        court_x, court_y = map_ball_to_court(det, H)
+        assert abs(court_x - 20.0) < 0.1
+        assert abs(court_y - 60.0) < 0.1

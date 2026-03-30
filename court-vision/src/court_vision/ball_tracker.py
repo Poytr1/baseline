@@ -181,3 +181,30 @@ def interpolate_gaps(
         result.append(curr)
 
     return result
+
+
+def map_ball_to_court(
+    detection: BallDetection,
+    homography: np.ndarray | None,
+) -> tuple[float, float] | None:
+    """Map a ball detection from pixel coordinates to court coordinates.
+
+    Uses the homography matrix from court detection (Phase 2A).
+
+    Args:
+        detection: Ball detection with pixel (x, y).
+        homography: 3x3 homography matrix, or None if unavailable.
+
+    Returns:
+        (x, y) court coordinates in meters, or None if homography is None.
+    """
+    if homography is None:
+        return None
+
+    pixel = np.array([detection.x, detection.y, 1.0], dtype=np.float64)
+    transformed = homography @ pixel
+    w = transformed[2]
+    if abs(w) < 1e-10:
+        return (0.0, 0.0)
+
+    return (float(transformed[0] / w), float(transformed[1] / w))
