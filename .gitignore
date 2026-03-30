@@ -49,6 +49,9 @@ next-env.d.ts
 # superpowers brainstorming
 .superpowers/
 
+# git worktrees
+.worktrees/
+
 # court-vision
 court-vision/models/
 court-vision/data/
