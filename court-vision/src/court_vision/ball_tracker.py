@@ -90,3 +90,94 @@ def detect_ball_in_frame(
             )
 
     return best_detection
+
+
+@dataclass
+class BallTrajectory:
+    """Sequence of ball detections across frames."""
+
+    detections: list[BallDetection]
+    fps: float
+
+
+def build_trajectory(
+    frames_dir: "Path",
+    start_frame: int,
+    end_frame: int,
+    fps: float,
+    max_gap_s: float = 0.5,
+) -> BallTrajectory:
+    """Build a ball trajectory by detecting the ball in each frame.
+
+    Args:
+        frames_dir: Directory containing frame_NNNNNN.jpg files.
+        start_frame: First frame index to process.
+        end_frame: Last frame index to process (inclusive).
+        fps: Video frame rate.
+        max_gap_s: Maximum gap in seconds to interpolate through.
+
+    Returns:
+        BallTrajectory with detections and interpolated positions.
+    """
+    from pathlib import Path
+
+    frames_dir = Path(frames_dir)
+    raw_detections: list[BallDetection] = []
+
+    for i in range(start_frame, end_frame + 1):
+        frame_path = frames_dir / f"frame_{i:06d}.jpg"
+        frame = cv2.imread(str(frame_path))
+        if frame is None:
+            continue
+        det = detect_ball_in_frame(frame, frame_index=i)
+        if det is not None:
+            raw_detections.append(det)
+
+    interpolated = interpolate_gaps(raw_detections, fps, max_gap_s)
+
+    return BallTrajectory(detections=interpolated, fps=fps)
+
+
+def interpolate_gaps(
+    detections: list[BallDetection],
+    fps: float,
+    max_gap_s: float = 0.5,
+) -> list[BallDetection]:
+    """Fill short gaps in ball detections with linear interpolation.
+
+    Args:
+        detections: Sorted list of ball detections (by frame_index).
+        fps: Video frame rate.
+        max_gap_s: Maximum gap duration in seconds to interpolate.
+
+    Returns:
+        Detections with interpolated positions filling short gaps.
+    """
+    if len(detections) <= 1:
+        return list(detections)
+
+    max_gap_frames = int(max_gap_s * fps)
+    result: list[BallDetection] = [detections[0]]
+
+    for i in range(1, len(detections)):
+        prev = detections[i - 1]
+        curr = detections[i]
+        gap = curr.frame_index - prev.frame_index
+
+        if 1 < gap <= max_gap_frames:
+            for j in range(1, gap):
+                t = j / gap
+                interp_x = prev.x + t * (curr.x - prev.x)
+                interp_y = prev.y + t * (curr.y - prev.y)
+                interp_conf = min(prev.confidence, curr.confidence) * 0.5
+                result.append(BallDetection(
+                    frame_index=prev.frame_index + j,
+                    x=interp_x,
+                    y=interp_y,
+                    confidence=interp_conf,
+                    interpolated=True,
+                ))
+
+        result.append(curr)
+
+    return result
