@@ -2,11 +2,13 @@
 
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 import cv2
 import numpy as np
 
-from court_vision.ball_tracker import BallDetection
+from court_vision.ball_tracker import BallDetection, detect_ball_in_frame
+from court_vision.scene_filter import GameplaySegment
 
 _PERSON_CLASS_ID = 0
 
@@ -238,3 +240,55 @@ def estimate_pose(
         role=player.role or "unknown",
         keypoints=keypoints,
     )
+
+
+def track_segment(
+    frames_dir: Path,
+    segment: GameplaySegment,
+    homography: np.ndarray | None = None,
+) -> list[FrameTrackingResult]:
+    """Track ball, players, and poses for all frames in a gameplay segment.
+
+    Args:
+        frames_dir: Directory containing frame_NNNNNN.jpg files.
+        segment: Gameplay segment defining frame range.
+        homography: Homography matrix for this segment, or None.
+
+    Returns:
+        List of FrameTrackingResult, one per successfully read frame.
+    """
+    results: list[FrameTrackingResult] = []
+
+    for frame_idx in range(segment.start_frame, segment.end_frame + 1):
+        frame_path = frames_dir / f"frame_{frame_idx:06d}.jpg"
+        frame = cv2.imread(str(frame_path))
+        if frame is None:
+            continue
+
+        # Ball detection
+        ball = detect_ball_in_frame(frame, frame_index=frame_idx)
+
+        # Player detection + role assignment
+        raw_players = detect_players_in_frame(frame, frame_index=frame_idx)
+        players = assign_player_roles(raw_players)
+
+        # Map players to court coordinates
+        if homography is not None:
+            for player in players:
+                player.court_position = map_player_to_court(player, homography)
+
+        # Pose estimation per player
+        poses: list[PoseKeypoints] = []
+        for player in players:
+            pose = estimate_pose(frame, player)
+            if pose is not None:
+                poses.append(pose)
+
+        results.append(FrameTrackingResult(
+            frame_index=frame_idx,
+            ball=ball,
+            players=players,
+            poses=poses,
+        ))
+
+    return results
