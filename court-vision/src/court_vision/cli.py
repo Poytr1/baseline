@@ -79,6 +79,35 @@ def export(
 
 
 @app.command()
+def review(
+    match_json: Path = typer.Argument(help="Path to match data JSON file."),
+    frames_dir: Optional[Path] = typer.Option(None, "--frames", help="Path to extracted frames directory."),
+    tracking_json: Optional[Path] = typer.Option(None, "--tracking", help="Path to tracking data JSON."),
+) -> None:
+    """Launch the Streamlit review UI for a match."""
+    import subprocess
+    import sys
+
+    if not match_json.exists():
+        typer.echo(f"Error: {match_json} not found.", err=True)
+        raise typer.Exit(1)
+
+    app_path = Path(__file__).parent / "review_app.py"
+    cmd = [
+        sys.executable, "-m", "streamlit", "run", str(app_path),
+        "--", str(match_json),
+    ]
+
+    if frames_dir:
+        cmd.extend(["--frames-dir", str(frames_dir)])
+    if tracking_json:
+        cmd.extend(["--tracking", str(tracking_json)])
+
+    typer.echo(f"Launching review UI for {match_json}...")
+    subprocess.run(cmd)
+
+
+@app.command()
 def version() -> None:
     """Print the Court Vision version."""
     from court_vision import __version__

@@ -164,3 +164,18 @@ class TestExportCommand:
 
         assert result.exit_code == 0
         assert "Exported" in result.output
+
+
+class TestReviewCommand:
+    @patch("subprocess.run")
+    def test_review_launches_streamlit(self, mock_run: MagicMock, tmp_path: Path):
+        """Review command calls streamlit run with the correct arguments."""
+        match_file = tmp_path / "match.json"
+        match_file.write_text('{"match_id": "test"}')
+
+        result = runner.invoke(app, ["review", str(match_file)])
+
+        assert result.exit_code == 0
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert "streamlit" in str(call_args)
