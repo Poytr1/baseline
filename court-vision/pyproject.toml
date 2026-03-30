@@ -18,6 +18,7 @@ dependencies = [
     "pyyaml>=6.0",
     "ultralytics>=8.0",
     "mediapipe>=0.10",
+    "pandas>=2.0",
 ]
 
 [project.optional-dependencies]
