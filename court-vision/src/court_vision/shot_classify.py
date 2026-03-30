@@ -126,7 +126,8 @@ def _compute_rally_zone(x: float, y: float, hitter: str) -> str:
     return f"{direction}_{depth}"
 
 
-from court_vision.player_detect import PoseKeypoints
+from court_vision.player_detect import PoseKeypoints, FrameTrackingResult, PlayerDetection
+from court_vision.ball_tracker import BallDetection
 
 
 def classify_stroke(
@@ -195,3 +196,61 @@ def classify_stroke(
 
     # Default: forehand with low confidence
     return ("forehand", 0.4)
+
+
+def detect_contacts(
+    tracking_results: list[FrameTrackingResult],
+    fps: float,
+    proximity_threshold: float = 100.0,
+    min_frames_between_contacts: int = 5,
+) -> list[tuple[int, str]]:
+    """Detect frames where the ball contacts a player's racket.
+
+    Uses proximity between ball position and player bounding box.
+    A contact occurs when the ball is within proximity_threshold pixels
+    of a player's bounding box center.
+
+    Args:
+        tracking_results: Per-frame tracking data.
+        fps: Video frame rate.
+        proximity_threshold: Max distance in pixels for ball-player contact.
+        min_frames_between_contacts: Minimum frames between consecutive contacts.
+
+    Returns:
+        List of (frame_index, player_role) tuples for each detected contact.
+    """
+    contacts: list[tuple[int, str]] = []
+    last_contact_frame = -min_frames_between_contacts
+
+    for result in tracking_results:
+        if result.ball is None:
+            continue
+
+        if result.frame_index - last_contact_frame < min_frames_between_contacts:
+            continue
+
+        ball_x, ball_y = result.ball.x, result.ball.y
+
+        for player in result.players:
+            if player.role is None:
+                continue
+
+            # Check if ball is within the player's bounding box
+            in_bbox_x = player.bbox[0] <= ball_x <= player.bbox[2]
+            in_bbox_y = player.bbox[1] <= ball_y <= player.bbox[3]
+
+            if in_bbox_x and in_bbox_y:
+                contacts.append((result.frame_index, player.role))
+                last_contact_frame = result.frame_index
+                break
+
+            # Fallback: check distance to bbox center
+            px = (player.bbox[0] + player.bbox[2]) / 2
+            py = (player.bbox[1] + player.bbox[3]) / 2
+            dist = ((ball_x - px) ** 2 + (ball_y - py) ** 2) ** 0.5
+            if dist < proximity_threshold:
+                contacts.append((result.frame_index, player.role))
+                last_contact_frame = result.frame_index
+                break
+
+    return contacts

@@ -173,3 +173,68 @@ class TestClassifyStroke:
         stroke, conf = classify_stroke(pose)
         assert stroke in ("forehand", "backhand", "serve", "volley", "overhead", "slice")
         assert conf >= 0.0
+
+
+from court_vision.shot_classify import detect_contacts
+from court_vision.ball_tracker import BallDetection
+from court_vision.player_detect import FrameTrackingResult, PlayerDetection
+
+
+class TestDetectContacts:
+    def test_detects_contact_when_ball_near_player(self):
+        """Detects contact when ball position is near a player's wrist."""
+        tracking = [
+            FrameTrackingResult(
+                frame_index=0,
+                ball=BallDetection(frame_index=0, x=300.0, y=200.0, confidence=0.9),
+                players=[
+                    PlayerDetection(frame_index=0, bbox=(250.0, 100.0, 350.0, 500.0),
+                                    confidence=0.9, role="near_player"),
+                ],
+                poses=[],
+            ),
+            FrameTrackingResult(
+                frame_index=1,
+                ball=BallDetection(frame_index=1, x=310.0, y=250.0, confidence=0.9),
+                players=[
+                    PlayerDetection(frame_index=1, bbox=(250.0, 100.0, 350.0, 500.0),
+                                    confidence=0.9, role="near_player"),
+                ],
+                poses=[],
+            ),
+        ]
+        contacts = detect_contacts(tracking, fps=30.0)
+        assert len(contacts) >= 1
+        assert contacts[0][1] in ("near_player", "far_player")
+
+    def test_no_contact_when_ball_far_from_player(self):
+        """No contact when ball is not near any player."""
+        tracking = [
+            FrameTrackingResult(
+                frame_index=0,
+                ball=BallDetection(frame_index=0, x=100.0, y=100.0, confidence=0.9),
+                players=[
+                    PlayerDetection(frame_index=0, bbox=(500.0, 300.0, 600.0, 600.0),
+                                    confidence=0.9, role="near_player"),
+                ],
+                poses=[],
+            ),
+        ]
+        contacts = detect_contacts(tracking, fps=30.0)
+        assert len(contacts) == 0
+
+    def test_no_contact_when_no_ball(self):
+        """No contact when ball is not detected."""
+        tracking = [
+            FrameTrackingResult(
+                frame_index=0,
+                ball=None,
+                players=[
+                    PlayerDetection(frame_index=0, bbox=(250.0, 100.0, 350.0, 500.0),
+                                    confidence=0.9, role="near_player"),
+                ],
+                poses=[],
+            ),
+        ]
+        contacts = detect_contacts(tracking, fps=30.0)
+        assert len(contacts) == 0
