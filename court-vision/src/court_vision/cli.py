@@ -33,6 +33,12 @@ def process(
         successful = sum(1 for d in result.court_detections if d.success)
         typer.echo(f"Court detection: {successful}/{len(result.court_detections)} segments with homography")
 
+    if result.tracking_results:
+        ball_count = sum(1 for t in result.tracking_results if t.ball is not None)
+        player_frames = sum(1 for t in result.tracking_results if len(t.players) > 0)
+        typer.echo(f"Tracking: ball detected in {ball_count}/{len(result.tracking_results)} frames, "
+                   f"players in {player_frames}/{len(result.tracking_results)} frames")
+
 
 @app.command()
 def version() -> None:
