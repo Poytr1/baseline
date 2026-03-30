@@ -110,3 +110,50 @@ def compute_gameplay_score(
         spatial_score=spatial_score,
         composite=composite,
     )
+
+
+def classify_frame_heuristic(
+    frame: np.ndarray,
+    frame_index: int = 0,
+    gameplay_threshold: float = 0.45,
+    weights: HeuristicWeights | None = None,
+) -> SceneFilterResult:
+    """Classify a single frame using heuristic signals."""
+    scores = compute_gameplay_score(frame, weights)
+
+    if scores.composite >= gameplay_threshold:
+        category = SceneCategory.GAMEPLAY
+        confidence = scores.composite
+    else:
+        category = SceneCategory.TRANSITION
+        confidence = 1.0 - scores.composite
+
+    return SceneFilterResult(
+        frame_index=frame_index,
+        category=category,
+        confidence=confidence,
+    )
+
+
+def classify_frames_heuristic(
+    frames_dir: Path,
+    total_frames: int,
+    gameplay_threshold: float = 0.45,
+    weights: HeuristicWeights | None = None,
+) -> list[SceneFilterResult]:
+    """Classify all frames in a directory using heuristics.
+
+    Drop-in replacement for scene_filter.classify_frames().
+    """
+    results: list[SceneFilterResult] = []
+    for i in range(total_frames):
+        frame_path = frames_dir / f"frame_{i:06d}.jpg"
+        frame = cv2.imread(str(frame_path))
+        if frame is None:
+            continue
+        result = classify_frame_heuristic(
+            frame, frame_index=i,
+            gameplay_threshold=gameplay_threshold, weights=weights,
+        )
+        results.append(result)
+    return results

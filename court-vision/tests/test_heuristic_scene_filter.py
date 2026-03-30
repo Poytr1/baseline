@@ -7,11 +7,14 @@ import pytest
 from court_vision.heuristic_scene_filter import (
     HeuristicScores,
     HeuristicWeights,
+    classify_frame_heuristic,
+    classify_frames_heuristic,
     compute_court_color_ratio,
     compute_court_spatial_score,
     compute_gameplay_score,
     compute_line_score,
 )
+from court_vision.scene_filter import SceneCategory, SceneFilterResult
 
 
 class TestComputeCourtColorRatio:
@@ -121,3 +124,47 @@ class TestComputeGameplayScore:
         custom_weights = HeuristicWeights(court_color=1.0, line_detection=0.0, spatial_distribution=0.0)
         custom_scores = compute_gameplay_score(frame, weights=custom_weights)
         assert custom_scores.composite != default_scores.composite
+
+
+class TestClassifyFrameHeuristic:
+    def test_returns_scene_filter_result(self):
+        """Returns a SceneFilterResult."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        result = classify_frame_heuristic(frame)
+        assert isinstance(result, SceneFilterResult)
+
+    def test_gameplay_frame_classified_correctly(self):
+        """Synthetic court frame classified as GAMEPLAY."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        frame[240:, :] = (34, 139, 34)
+        cv2.line(frame, (100, 300), (1100, 300), (255, 255, 255), 3)
+        cv2.line(frame, (100, 600), (1100, 600), (255, 255, 255), 3)
+        cv2.line(frame, (200, 250), (200, 650), (255, 255, 255), 3)
+        cv2.line(frame, (1000, 250), (1000, 650), (255, 255, 255), 3)
+        result = classify_frame_heuristic(frame)
+        assert result.category == SceneCategory.GAMEPLAY
+
+    def test_non_gameplay_classified_as_transition(self):
+        """Black frame classified as non-gameplay."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        result = classify_frame_heuristic(frame)
+        assert result.category != SceneCategory.GAMEPLAY
+
+    def test_frame_index_preserved(self):
+        """frame_index round-trips."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        result = classify_frame_heuristic(frame, frame_index=42)
+        assert result.frame_index == 42
+
+
+class TestClassifyFramesHeuristic:
+    def test_classifies_all_frames(self, tmp_path):
+        """Classifies all frames in a directory."""
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        for i in range(3):
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), frame)
+        results = classify_frames_heuristic(frames_dir, total_frames=3)
+        assert len(results) == 3
+        assert all(isinstance(r, SceneFilterResult) for r in results)
