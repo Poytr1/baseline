@@ -12,6 +12,7 @@ from court_vision.ingest import (
     extract_frames,
     is_youtube_url,
 )
+from court_vision.player_detect import FrameTrackingResult, track_segment
 from court_vision.scene_filter import (
     GameplaySegment,
     classify_frames,
@@ -31,6 +32,7 @@ class PipelineResult:
     gameplay_frame_count: int
     frames_dir: Path
     court_detections: list[CourtDetectionResult] | None = None
+    tracking_results: list[FrameTrackingResult] | None = None
 
 
 def run_pipeline(
@@ -79,6 +81,15 @@ def run_pipeline(
     # Stage 3: Court Detection & Homography
     court_detections = compute_segment_homographies(frame_seq.frames_dir, segments)
 
+    # Stage 4: Ball Tracking + Player Detection + Pose
+    all_tracking: list[FrameTrackingResult] = []
+    for i, segment in enumerate(segments):
+        homography = None
+        if court_detections and i < len(court_detections) and court_detections[i].success:
+            homography = court_detections[i].homography
+        segment_tracking = track_segment(frame_seq.frames_dir, segment, homography)
+        all_tracking.extend(segment_tracking)
+
     return PipelineResult(
         source=source,
         total_frames=frame_seq.total_frames,
@@ -87,4 +98,5 @@ def run_pipeline(
         gameplay_frame_count=gameplay_frames,
         frames_dir=frame_seq.frames_dir,
         court_detections=court_detections,
+        tracking_results=all_tracking,
     )
