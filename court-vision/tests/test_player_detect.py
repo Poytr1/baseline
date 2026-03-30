@@ -201,9 +201,8 @@ class TestEstimatePose:
         mock_landmark.visibility = 0.95
 
         mock_results = MagicMock()
-        mock_results.pose_landmarks = MagicMock()
-        mock_results.pose_landmarks.landmark = [mock_landmark] * 33
-        mock_estimator.process.return_value = mock_results
+        mock_results.pose_landmarks = [[mock_landmark] * 33]
+        mock_estimator.detect.return_value = mock_results
 
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         player = PlayerDetection(
@@ -226,8 +225,8 @@ class TestEstimatePose:
         mock_get_estimator.return_value = mock_estimator
 
         mock_results = MagicMock()
-        mock_results.pose_landmarks = None
-        mock_estimator.process.return_value = mock_results
+        mock_results.pose_landmarks = []
+        mock_estimator.detect.return_value = mock_results
 
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         player = PlayerDetection(

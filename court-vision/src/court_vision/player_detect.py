@@ -177,15 +177,38 @@ _POSE_LANDMARK_NAMES = [
 
 
 @lru_cache(maxsize=1)
+def _get_pose_model_path() -> str:
+    """Download and cache the MediaPipe pose landmarker model.
+
+    Returns:
+        Path to the .task model file.
+    """
+    import urllib.request
+
+    cache_dir = Path.home() / ".cache" / "court-vision" / "models"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    model_path = cache_dir / "pose_landmarker_lite.task"
+
+    if not model_path.exists():
+        url = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
+        urllib.request.urlretrieve(url, str(model_path))
+
+    return str(model_path)
+
+
+@lru_cache(maxsize=1)
 def _get_pose_estimator():
-    """Load MediaPipe Pose estimator (cached singleton)."""
+    """Load MediaPipe PoseLandmarker (cached singleton)."""
     import mediapipe as mp
 
-    return mp.solutions.pose.Pose(
-        static_image_mode=True,
-        model_complexity=1,
-        min_detection_confidence=0.5,
+    model_path = _get_pose_model_path()
+    options = mp.tasks.vision.PoseLandmarkerOptions(
+        base_options=mp.tasks.BaseOptions(model_asset_path=model_path),
+        running_mode=mp.tasks.vision.RunningMode.IMAGE,
+        num_poses=1,
+        min_pose_detection_confidence=0.5,
     )
+    return mp.tasks.vision.PoseLandmarker.create_from_options(options)
 
 
 def estimate_pose(
@@ -203,6 +226,8 @@ def estimate_pose(
     Returns:
         PoseKeypoints with named keypoints, or None if pose not detected.
     """
+    import mediapipe as mp
+
     x1, y1, x2, y2 = player.bbox
     x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
 
@@ -219,16 +244,17 @@ def estimate_pose(
     crop = frame[y1:y2, x1:x2]
     rgb_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
 
-    pose = _get_pose_estimator()
-    results = pose.process(rgb_crop)
+    landmarker = _get_pose_estimator()
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_crop)
+    results = landmarker.detect(mp_image)
 
-    if results.pose_landmarks is None:
+    if not results.pose_landmarks:
         return None
 
     keypoints: dict[str, tuple[float, float, float]] = {}
     crop_h, crop_w = crop.shape[:2]
 
-    for i, landmark in enumerate(results.pose_landmarks.landmark):
+    for i, landmark in enumerate(results.pose_landmarks[0]):
         if i < len(_POSE_LANDMARK_NAMES):
             name = _POSE_LANDMARK_NAMES[i]
             px = x1 + landmark.x * crop_w
