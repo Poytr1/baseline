@@ -238,3 +238,32 @@ class TestDetectContacts:
         ]
         contacts = detect_contacts(tracking, fps=30.0)
         assert len(contacts) == 0
+
+
+from court_vision.shot_classify import detect_point_boundaries
+from court_vision.scene_filter import GameplaySegment
+
+
+class TestDetectPointBoundaries:
+    def test_each_segment_is_a_point(self):
+        """Each gameplay segment produces one point boundary."""
+        segments = [
+            GameplaySegment(start_frame=0, end_frame=100, start_time_s=0.0, end_time_s=3.33, frame_count=101),
+            GameplaySegment(start_frame=150, end_frame=300, start_time_s=5.0, end_time_s=10.0, frame_count=151),
+        ]
+        boundaries = detect_point_boundaries(segments)
+        assert len(boundaries) == 2
+        assert boundaries[0] == (0, 100, 0.0, 3.33)
+        assert boundaries[1] == (150, 300, 5.0, 10.0)
+
+    def test_empty_segments(self):
+        """Empty segment list returns empty boundaries."""
+        assert detect_point_boundaries([]) == []
+
+    def test_single_segment(self):
+        """Single segment produces one boundary."""
+        segments = [
+            GameplaySegment(start_frame=50, end_frame=200, start_time_s=1.67, end_time_s=6.67, frame_count=151),
+        ]
+        boundaries = detect_point_boundaries(segments)
+        assert len(boundaries) == 1

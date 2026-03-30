@@ -254,3 +254,26 @@ def detect_contacts(
                 break
 
     return contacts
+
+
+from court_vision.scene_filter import GameplaySegment
+
+
+def detect_point_boundaries(
+    segments: list[GameplaySegment],
+) -> list[tuple[int, int, float, float]]:
+    """Detect point boundaries from gameplay segments.
+
+    Each gameplay segment is treated as one point (approximately).
+    Gaps between segments serve as point boundaries.
+
+    Args:
+        segments: Gameplay segments from the scene filter.
+
+    Returns:
+        List of (start_frame, end_frame, start_time_s, end_time_s) per point.
+    """
+    return [
+        (seg.start_frame, seg.end_frame, seg.start_time_s, seg.end_time_s)
+        for seg in segments
+    ]
