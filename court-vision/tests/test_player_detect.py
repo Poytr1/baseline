@@ -182,3 +182,59 @@ class TestMapPlayerToCourt:
         det = PlayerDetection(frame_index=0, bbox=(100.0, 200.0, 200.0, 500.0), confidence=0.9)
         result = map_player_to_court(det, None)
         assert result is None
+
+
+from court_vision.player_detect import estimate_pose
+
+
+class TestEstimatePose:
+    @patch("court_vision.player_detect._get_pose_estimator")
+    def test_extracts_keypoints_from_crop(self, mock_get_estimator: MagicMock):
+        """Extracts pose keypoints from a player bounding box crop."""
+        mock_estimator = MagicMock()
+        mock_get_estimator.return_value = mock_estimator
+
+        mock_landmark = MagicMock()
+        mock_landmark.x = 0.5
+        mock_landmark.y = 0.3
+        mock_landmark.visibility = 0.95
+
+        mock_results = MagicMock()
+        mock_results.pose_landmarks = MagicMock()
+        mock_results.pose_landmarks.landmark = [mock_landmark] * 33
+        mock_estimator.process.return_value = mock_results
+
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        player = PlayerDetection(
+            frame_index=0,
+            bbox=(100.0, 200.0, 200.0, 500.0),
+            confidence=0.9,
+            role="near_player",
+        )
+
+        result = estimate_pose(frame, player)
+        assert result is not None
+        assert result.frame_index == 0
+        assert result.role == "near_player"
+        assert len(result.keypoints) > 0
+
+    @patch("court_vision.player_detect._get_pose_estimator")
+    def test_returns_none_when_no_pose_detected(self, mock_get_estimator: MagicMock):
+        """Returns None when MediaPipe finds no pose."""
+        mock_estimator = MagicMock()
+        mock_get_estimator.return_value = mock_estimator
+
+        mock_results = MagicMock()
+        mock_results.pose_landmarks = None
+        mock_estimator.process.return_value = mock_results
+
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        player = PlayerDetection(
+            frame_index=0,
+            bbox=(100.0, 200.0, 200.0, 500.0),
+            confidence=0.9,
+            role="far_player",
+        )
+
+        result = estimate_pose(frame, player)
+        assert result is None
