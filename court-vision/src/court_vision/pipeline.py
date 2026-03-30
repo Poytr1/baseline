@@ -19,6 +19,7 @@ from court_vision.scene_filter import (
     filter_gameplay_segments,
     load_scene_model,
 )
+from court_vision.shot_classify import MatchData, build_match_data
 
 
 @dataclass
@@ -33,6 +34,7 @@ class PipelineResult:
     frames_dir: Path
     court_detections: list[CourtDetectionResult] | None = None
     tracking_results: list[FrameTrackingResult] | None = None
+    match_data: MatchData | None = None
 
 
 def run_pipeline(
@@ -43,7 +45,7 @@ def run_pipeline(
 ) -> PipelineResult:
     """Run the Court Vision pipeline on a video source.
 
-    Stages: video ingestion -> scene filter -> court detection.
+    Stages: video ingestion -> scene filter -> court detection -> tracking -> shot classification.
 
     Args:
         source: YouTube URL or local video file path.
@@ -53,7 +55,7 @@ def run_pipeline(
                             None uses ImageNet pre-trained base.
 
     Returns:
-        PipelineResult with frame data, gameplay segments, and court detections.
+        PipelineResult with frame data, gameplay segments, court detections, and match data.
     """
     config = load_config(config_path)
     device = get_device(override=config.device)
@@ -90,6 +92,14 @@ def run_pipeline(
         segment_tracking = track_segment(frame_seq.frames_dir, segment, homography)
         all_tracking.extend(segment_tracking)
 
+    # Stage 5: Shot Classification
+    match_data = build_match_data(
+        source=source,
+        segments=segments,
+        tracking_results=all_tracking,
+        fps=frame_seq.fps,
+    )
+
     return PipelineResult(
         source=source,
         total_frames=frame_seq.total_frames,
@@ -99,4 +109,5 @@ def run_pipeline(
         frames_dir=frame_seq.frames_dir,
         court_detections=court_detections,
         tracking_results=all_tracking,
+        match_data=match_data,
     )
