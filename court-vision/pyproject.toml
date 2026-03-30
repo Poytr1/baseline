@@ -19,6 +19,7 @@ dependencies = [
     "ultralytics>=8.0",
     "mediapipe>=0.10",
     "pandas>=2.0",
+    "streamlit>=1.30",
 ]
 
 [project.optional-dependencies]
