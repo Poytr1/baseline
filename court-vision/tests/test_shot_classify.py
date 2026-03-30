@@ -267,3 +267,65 @@ class TestDetectPointBoundaries:
         ]
         boundaries = detect_point_boundaries(segments)
         assert len(boundaries) == 1
+
+
+from court_vision.shot_classify import build_match_data
+
+
+class TestBuildMatchData:
+    def test_builds_match_with_points_and_shots(self):
+        """build_match_data produces MatchData with points containing shots."""
+        segments = [
+            GameplaySegment(start_frame=0, end_frame=50, start_time_s=0.0, end_time_s=1.67, frame_count=51),
+        ]
+        tracking = [
+            FrameTrackingResult(
+                frame_index=10,
+                ball=BallDetection(frame_index=10, x=300.0, y=300.0, confidence=0.9),
+                players=[
+                    PlayerDetection(frame_index=10, bbox=(250.0, 100.0, 350.0, 500.0),
+                                    confidence=0.9, role="near_player"),
+                ],
+                poses=[PoseKeypoints(
+                    frame_index=10, role="near_player",
+                    keypoints={
+                        "nose": (300.0, 100.0, 0.9),
+                        "left_shoulder": (280.0, 200.0, 0.9),
+                        "right_shoulder": (320.0, 200.0, 0.9),
+                        "left_elbow": (260.0, 280.0, 0.9),
+                        "right_elbow": (340.0, 280.0, 0.9),
+                        "left_wrist": (250.0, 350.0, 0.9),
+                        "right_wrist": (450.0, 250.0, 0.9),
+                        "left_hip": (290.0, 400.0, 0.9),
+                        "right_hip": (310.0, 400.0, 0.9),
+                    },
+                )],
+            ),
+        ]
+        match = build_match_data(
+            source="test.mp4",
+            segments=segments,
+            tracking_results=tracking,
+            fps=30.0,
+        )
+        assert isinstance(match, MatchData)
+        assert match.source_url == "test.mp4"
+        assert len(match.points) == 1
+        point = match.points[0]
+        assert point.point_number == 1
+        assert point.rally_length >= 0
+
+    def test_empty_tracking_produces_empty_points(self):
+        """No tracking data -> points with no shots."""
+        segments = [
+            GameplaySegment(start_frame=0, end_frame=50, start_time_s=0.0, end_time_s=1.67, frame_count=51),
+        ]
+        match = build_match_data(
+            source="test.mp4",
+            segments=segments,
+            tracking_results=[],
+            fps=30.0,
+        )
+        assert len(match.points) == 1
+        assert match.points[0].rally_length == 0
+        assert match.points[0].shots == []

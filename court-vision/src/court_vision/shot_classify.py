@@ -277,3 +277,122 @@ def detect_point_boundaries(
         (seg.start_frame, seg.end_frame, seg.start_time_s, seg.end_time_s)
         for seg in segments
     ]
+
+
+import hashlib
+from datetime import date
+
+
+def build_match_data(
+    source: str,
+    segments: list[GameplaySegment],
+    tracking_results: list[FrameTrackingResult],
+    fps: float,
+    court_homography: "np.ndarray | None" = None,
+) -> MatchData:
+    """Build complete match data from tracking results and segments.
+
+    Orchestrates contact detection, stroke classification, placement computation,
+    and point construction.
+
+    Args:
+        source: Source video path or URL.
+        segments: Gameplay segments (one per approximate point).
+        tracking_results: Per-frame tracking data.
+        fps: Video frame rate.
+        court_homography: Homography for ball-to-court mapping (optional).
+
+    Returns:
+        Complete MatchData ready for export.
+    """
+    import numpy as np
+
+    match_id = hashlib.md5(source.encode()).hexdigest()[:12]
+    boundaries = detect_point_boundaries(segments)
+    contacts = detect_contacts(tracking_results, fps)
+
+    # Build lookup: frame_index -> tracking result
+    tracking_by_frame: dict[int, FrameTrackingResult] = {
+        t.frame_index: t for t in tracking_results
+    }
+
+    points: list[Point] = []
+
+    for point_num, (start, end, start_t, end_t) in enumerate(boundaries, 1):
+        # Find contacts within this point's frame range
+        point_contacts = [
+            (frame, role) for frame, role in contacts
+            if start <= frame <= end
+        ]
+
+        shots: list[Shot] = []
+        for shot_num, (frame, role) in enumerate(point_contacts, 1):
+            tracking = tracking_by_frame.get(frame)
+
+            # Classify stroke from pose
+            stroke = "forehand"
+            stroke_conf = 0.4
+            if tracking and tracking.poses:
+                player_pose = next(
+                    (p for p in tracking.poses if p.role == role), None
+                )
+                if player_pose:
+                    stroke, stroke_conf = classify_stroke(player_pose)
+
+            # Compute placement from ball position
+            placement = None
+            if tracking and tracking.ball and court_homography is not None:
+                from court_vision.ball_tracker import map_ball_to_court
+
+                court_pos = map_ball_to_court(tracking.ball, court_homography)
+                if court_pos:
+                    is_serve = shot_num == 1 and point_num > 0
+                    zone = compute_placement_zone(
+                        x=court_pos[0], y=court_pos[1],
+                        is_serve=is_serve,
+                        hitter=role,
+                    )
+                    placement = ShotPlacement(
+                        x=court_pos[0], y=court_pos[1], zone=zone,
+                    )
+
+            shots.append(Shot(
+                shot_number=shot_num,
+                frame=frame,
+                time_s=frame / fps,
+                player=role,
+                stroke=stroke,
+                placement=placement,
+                confidence=stroke_conf,
+            ))
+
+        # Determine outcome (simple heuristic: last shot determines outcome)
+        outcome = None
+        outcome_player = None
+        if shots:
+            last_shot = shots[-1]
+            outcome = "winner" if last_shot.confidence > 0.6 else "error"
+            outcome_player = last_shot.player
+
+        points.append(Point(
+            point_number=point_num,
+            start_frame=start,
+            end_frame=end,
+            start_time_s=start_t,
+            end_time_s=end_t,
+            server=shots[0].player if shots else None,
+            shots=shots,
+            outcome=outcome,
+            outcome_player=outcome_player,
+            rally_length=len(shots),
+        ))
+
+    return MatchData(
+        match_id=match_id,
+        source_url=source,
+        metadata={
+            "players": ["near_player", "far_player"],
+            "date_processed": str(date.today()),
+        },
+        points=points,
+    )
