@@ -4,7 +4,14 @@ import cv2
 import numpy as np
 import pytest
 
-from court_vision.heuristic_scene_filter import compute_court_color_ratio, compute_line_score
+from court_vision.heuristic_scene_filter import (
+    HeuristicScores,
+    HeuristicWeights,
+    compute_court_color_ratio,
+    compute_court_spatial_score,
+    compute_gameplay_score,
+    compute_line_score,
+)
 
 
 class TestComputeCourtColorRatio:
@@ -64,3 +71,53 @@ class TestComputeLineScore:
         score = compute_line_score(frame)
         # Should have grid bonus since lines in both directions
         assert score > 0.0
+
+
+class TestComputeCourtSpatialScore:
+    def test_court_in_lower_region_scores_high(self):
+        """Green in bottom 2/3, dark on top scores high."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        frame[240:, :] = (34, 139, 34)  # bottom 2/3 green
+        score = compute_court_spatial_score(frame)
+        assert score >= 0.5
+
+    def test_uniform_green_scores_lower(self):
+        """Court color everywhere gives lower spatial signal than bottom-only."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        frame[:] = (34, 139, 34)
+        score_uniform = compute_court_spatial_score(frame)
+
+        frame2 = np.zeros((720, 1280, 3), dtype=np.uint8)
+        frame2[240:, :] = (34, 139, 34)
+        score_bottom = compute_court_spatial_score(frame2)
+
+        assert score_bottom >= score_uniform
+
+
+class TestComputeGameplayScore:
+    def test_synthetic_court_gets_high_composite(self):
+        """Green frame with white lines gets high composite score."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        frame[240:, :] = (34, 139, 34)
+        cv2.line(frame, (100, 300), (1100, 300), (255, 255, 255), 3)
+        cv2.line(frame, (100, 600), (1100, 600), (255, 255, 255), 3)
+        cv2.line(frame, (200, 250), (200, 650), (255, 255, 255), 3)
+        cv2.line(frame, (1000, 250), (1000, 650), (255, 255, 255), 3)
+        scores = compute_gameplay_score(frame)
+        assert isinstance(scores, HeuristicScores)
+        assert scores.composite > 0.4
+
+    def test_black_frame_gets_low_composite(self):
+        """All-black frame gets near-zero composite."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        scores = compute_gameplay_score(frame)
+        assert scores.composite < 0.1
+
+    def test_custom_weights_applied(self):
+        """Custom weights change the composite score."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        frame[:] = (34, 139, 34)
+        default_scores = compute_gameplay_score(frame)
+        custom_weights = HeuristicWeights(court_color=1.0, line_detection=0.0, spatial_distribution=0.0)
+        custom_scores = compute_gameplay_score(frame, weights=custom_weights)
+        assert custom_scores.composite != default_scores.composite
