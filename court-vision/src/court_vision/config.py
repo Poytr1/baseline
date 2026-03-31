@@ -1,6 +1,7 @@
 """Pipeline configuration with YAML loading."""
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel
@@ -11,7 +12,7 @@ class PipelineSettings(BaseModel):
     fps_override: int | None = None
     confidence_threshold: float = 0.7
     max_interpolation_gap_s: float = 0.5
-    scene_filter_mode: str = "heuristic"  # "heuristic" or "ml"
+    scene_filter_mode: Literal["heuristic", "ml"] = "heuristic"
     gameplay_threshold: float = 0.45
 
 

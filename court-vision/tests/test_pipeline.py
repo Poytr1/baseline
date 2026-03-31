@@ -358,7 +358,6 @@ class TestRunPipelineWithHeuristicFilter:
 
         from court_vision.config import PipelineConfig, PipelineSettings
         from court_vision.ingest import FrameSequence
-        from court_vision.scene_filter import GameplaySegment
 
         video_path = tmp_path / "test.mp4"
         video_path.touch()
