@@ -22,6 +22,7 @@ def detect_ball_in_frame(
     frame_index: int = 0,
     min_radius: int = 3,
     max_radius: int = 20,
+    min_confidence: float = 0.0,
 ) -> BallDetection | None:
     """Detect the tennis ball in a single frame using color + shape filtering.
 
@@ -33,6 +34,7 @@ def detect_ball_in_frame(
         frame_index: Index of this frame in the video sequence.
         min_radius: Minimum ball radius in pixels.
         max_radius: Maximum ball radius in pixels.
+        min_confidence: Minimum confidence threshold for accepted detections.
 
     Returns:
         BallDetection with pixel coordinates, or None if no ball found.
@@ -89,6 +91,8 @@ def detect_ball_in_frame(
                 confidence=float(min(circularity, 1.0)),
             )
 
+    if best_detection is not None and best_detection.confidence < min_confidence:
+        return None
     return best_detection
 
 

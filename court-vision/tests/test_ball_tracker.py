@@ -231,3 +231,31 @@ class TestRejectStationaryDetections:
         result = reject_stationary_detections(dets, window=5)
         assert len(result) == 2
         assert all(d is not None for d in result)
+
+
+class TestDetectBallMinConfidence:
+    def _create_frame_with_ball(self, width=640, height=480,
+                                ball_center=(320, 240), ball_radius=8,
+                                ball_color=(0, 255, 255)):
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        frame[:, :] = (0, 100, 0)
+        cv2.circle(frame, ball_center, ball_radius, ball_color, -1)
+        return frame
+
+    def test_high_confidence_threshold_rejects(self):
+        """Very high min_confidence can reject marginal detections."""
+        frame = self._create_frame_with_ball()
+        result = detect_ball_in_frame(frame, frame_index=0, min_confidence=0.99)
+        assert result is None or result.confidence >= 0.99
+
+    def test_zero_confidence_accepts_all(self):
+        """min_confidence=0.0 accepts any detection."""
+        frame = self._create_frame_with_ball()
+        result = detect_ball_in_frame(frame, frame_index=0, min_confidence=0.0)
+        assert result is not None
+
+    def test_default_confidence_preserves_behavior(self):
+        """Default min_confidence=0.0 matches old behavior (no filtering)."""
+        frame = self._create_frame_with_ball()
+        result = detect_ball_in_frame(frame, frame_index=0)
+        assert result is not None
