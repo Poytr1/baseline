@@ -433,3 +433,75 @@ class TestTrackSegmentUsesBuildTrajectory:
         assert ball_frames.get(0) is not None
         assert ball_frames.get(2) is not None
         assert ball_frames.get(1) is None
+
+
+class TestPipelinePassesHomography:
+    @patch("court_vision.pipeline.build_match_data")
+    @patch("court_vision.pipeline.track_segment")
+    @patch("court_vision.pipeline.compute_segment_homographies")
+    @patch("court_vision.pipeline.extract_frames")
+    @patch("court_vision.pipeline.filter_gameplay_segments")
+    @patch("court_vision.pipeline.load_scene_model")
+    @patch("court_vision.pipeline.get_device")
+    @patch("court_vision.pipeline.load_config")
+    def test_homography_passed_to_build_match_data(
+        self,
+        mock_load_config: MagicMock,
+        mock_get_device: MagicMock,
+        mock_load_model: MagicMock,
+        mock_filter: MagicMock,
+        mock_extract: MagicMock,
+        mock_homographies: MagicMock,
+        mock_track: MagicMock,
+        mock_build_match: MagicMock,
+        tmp_path: Path,
+    ):
+        """Pipeline passes court_homography to build_match_data when available."""
+        import numpy as np
+        import torch
+
+        from court_vision.config import PipelineConfig, PipelineSettings
+        from court_vision.court_detect import CourtDetectionResult
+        from court_vision.ingest import FrameSequence
+        from court_vision.scene_filter import GameplaySegment
+
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+
+        mock_load_config.return_value = PipelineConfig(
+            pipeline=PipelineSettings(scene_filter_mode="ml")
+        )
+        mock_get_device.return_value = torch.device("cpu")
+        mock_load_model.return_value = MagicMock()
+        mock_extract.return_value = FrameSequence(
+            frames_dir=frames_dir, fps=30.0, total_frames=100, resolution=(1280, 720),
+        )
+        mock_classify_result = []
+        mock_filter.return_value = [
+            GameplaySegment(start_frame=0, end_frame=50, start_time_s=0.0, end_time_s=1.67, frame_count=51),
+        ]
+
+        fake_H = np.eye(3, dtype=np.float64)
+        mock_homographies.return_value = [
+            CourtDetectionResult(success=True, homography=fake_H, num_lines_detected=6),
+        ]
+        mock_track.return_value = []
+        mock_build_match.return_value = None
+
+        with patch("court_vision.pipeline.classify_frames", return_value=mock_classify_result):
+            run_pipeline(str(video_path), config_path=None)
+
+        # Verify court_homography was passed
+        call_kwargs = mock_build_match.call_args
+        assert call_kwargs is not None
+        # Check keyword args for court_homography
+        if call_kwargs.kwargs:
+            assert "court_homography" in call_kwargs.kwargs
+            passed_H = call_kwargs.kwargs["court_homography"]
+        else:
+            # court_homography is the 5th positional arg
+            passed_H = call_kwargs.args[4] if len(call_kwargs.args) > 4 else None
+        assert passed_H is not None
+        assert np.array_equal(passed_H, fake_H)

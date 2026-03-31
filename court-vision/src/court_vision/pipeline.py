@@ -104,11 +104,18 @@ def run_pipeline(
         all_tracking.extend(segment_tracking)
 
     # Stage 5: Shot Classification
+    court_homography = None
+    for cd in (court_detections or []):
+        if cd.success and cd.homography is not None:
+            court_homography = cd.homography
+            break
+
     match_data = build_match_data(
         source=source,
         segments=segments,
         tracking_results=all_tracking,
         fps=frame_seq.fps,
+        court_homography=court_homography,
     )
 
     return PipelineResult(
