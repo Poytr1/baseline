@@ -400,3 +400,55 @@ class TestComputeSegmentHomographies:
 
             call_args = mock_detect.call_args
             assert call_args is not None
+
+
+class TestComputeHomographyRANSAC:
+    def test_ransac_rejects_outlier(self):
+        """Homography computed with RANSAC ignores outlier point."""
+        from court_vision.court_detect import compute_homography
+
+        # 4 good correspondences + 1 outlier
+        pixel_points = np.array([
+            [200.0, 650.0],
+            [1080.0, 650.0],
+            [880.0, 150.0],
+            [400.0, 150.0],
+            [999.0, 999.0],  # outlier
+        ], dtype=np.float64)
+
+        court_points = np.array([
+            [-4.115, -11.885],
+            [4.115, -11.885],
+            [4.115, 11.885],
+            [-4.115, 11.885],
+            [0.0, 0.0],  # outlier target
+        ], dtype=np.float64)
+
+        H = compute_homography(pixel_points, court_points)
+        assert H is not None
+        assert H.shape == (3, 3)
+
+    def test_good_points_still_work(self):
+        """RANSAC doesn't break normal 4-point homography."""
+        from court_vision.court_detect import compute_homography, pixel_to_court
+
+        pixel_points = np.array([
+            [200.0, 650.0],
+            [1080.0, 650.0],
+            [880.0, 150.0],
+            [400.0, 150.0],
+        ], dtype=np.float64)
+
+        court_points = np.array([
+            [-4.115, -11.885],
+            [4.115, -11.885],
+            [4.115, 11.885],
+            [-4.115, 11.885],
+        ], dtype=np.float64)
+
+        H = compute_homography(pixel_points, court_points)
+        assert H is not None
+
+        result = pixel_to_court(np.array([200.0, 650.0]), H)
+        assert result[0] == pytest.approx(-4.115, abs=0.5)
+        assert result[1] == pytest.approx(-11.885, abs=0.5)

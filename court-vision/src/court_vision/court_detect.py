@@ -218,7 +218,11 @@ def compute_homography(
     if len(pixel_points) < 4 or len(court_points) < 4:
         return None
 
-    H, mask = cv2.findHomography(pixel_points, court_points, method=0)
+    H, mask = cv2.findHomography(
+        pixel_points, court_points,
+        method=cv2.RANSAC,
+        ransacReprojThreshold=5.0,
+    )
 
     if H is None:
         return None
