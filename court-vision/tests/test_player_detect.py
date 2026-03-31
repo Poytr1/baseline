@@ -250,17 +250,17 @@ class TestTrackSegment:
     @patch("court_vision.player_detect.estimate_pose")
     @patch("court_vision.player_detect.assign_player_roles")
     @patch("court_vision.player_detect.detect_players_in_frame")
-    @patch("court_vision.player_detect.detect_ball_in_frame")
+    @patch("court_vision.player_detect.build_trajectory")
     def test_tracks_all_frames_in_segment(
         self,
-        mock_detect_ball: MagicMock,
+        mock_build_traj: MagicMock,
         mock_detect_players: MagicMock,
         mock_assign_roles: MagicMock,
         mock_estimate_pose: MagicMock,
         tmp_path: Path,
     ):
         """Processes each frame in a segment and returns tracking results."""
-        from court_vision.ball_tracker import BallDetection
+        from court_vision.ball_tracker import BallDetection, BallTrajectory
 
         frames_dir = tmp_path / "frames"
         frames_dir.mkdir()
@@ -274,7 +274,15 @@ class TestTrackSegment:
             frame_count=3,
         )
 
-        mock_detect_ball.return_value = BallDetection(frame_index=0, x=300.0, y=200.0, confidence=0.8)
+        # build_trajectory returns detections with enough motion to pass stationarity filter
+        mock_build_traj.return_value = BallTrajectory(
+            detections=[
+                BallDetection(frame_index=0, x=300.0, y=200.0, confidence=0.8),
+                BallDetection(frame_index=1, x=350.0, y=250.0, confidence=0.8),
+                BallDetection(frame_index=2, x=400.0, y=300.0, confidence=0.8),
+            ],
+            fps=30.0,
+        )
         mock_detect_players.return_value = [
             PlayerDetection(frame_index=0, bbox=(100.0, 300.0, 200.0, 600.0), confidence=0.9),
         ]
@@ -290,22 +298,24 @@ class TestTrackSegment:
 
         assert len(results) == 3
         assert all(isinstance(r, FrameTrackingResult) for r in results)
-        assert mock_detect_ball.call_count == 3
+        mock_build_traj.assert_called_once()
         assert mock_detect_players.call_count == 3
 
     @patch("court_vision.player_detect.estimate_pose")
     @patch("court_vision.player_detect.assign_player_roles")
     @patch("court_vision.player_detect.detect_players_in_frame")
-    @patch("court_vision.player_detect.detect_ball_in_frame")
+    @patch("court_vision.player_detect.build_trajectory")
     def test_handles_missing_frames(
         self,
-        mock_detect_ball: MagicMock,
+        mock_build_traj: MagicMock,
         mock_detect_players: MagicMock,
         mock_assign_roles: MagicMock,
         mock_estimate_pose: MagicMock,
         tmp_path: Path,
     ):
         """Skips frames that don't exist on disk."""
+        from court_vision.ball_tracker import BallTrajectory
+
         frames_dir = tmp_path / "frames"
         frames_dir.mkdir()
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -317,7 +327,7 @@ class TestTrackSegment:
             frame_count=2,
         )
 
-        mock_detect_ball.return_value = None
+        mock_build_traj.return_value = BallTrajectory(detections=[], fps=30.0)
         mock_detect_players.return_value = []
         mock_assign_roles.return_value = []
         mock_estimate_pose.return_value = None
