@@ -100,7 +100,7 @@ def run_pipeline(
         homography = None
         if court_detections and i < len(court_detections) and court_detections[i].success:
             homography = court_detections[i].homography
-        segment_tracking = track_segment(frame_seq.frames_dir, segment, homography)
+        segment_tracking = track_segment(frame_seq.frames_dir, segment, homography, fps=frame_seq.fps)
         all_tracking.extend(segment_tracking)
 
     # Stage 5: Shot Classification

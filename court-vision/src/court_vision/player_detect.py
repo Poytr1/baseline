@@ -272,6 +272,7 @@ def track_segment(
     frames_dir: Path,
     segment: GameplaySegment,
     homography: np.ndarray | None = None,
+    fps: float = 30.0,
 ) -> list[FrameTrackingResult]:
     """Track ball, players, and poses for all frames in a gameplay segment.
 
@@ -282,13 +283,14 @@ def track_segment(
         frames_dir: Directory containing frame_NNNNNN.jpg files.
         segment: Gameplay segment defining frame range.
         homography: Homography matrix for this segment, or None.
+        fps: Video frame rate for trajectory interpolation.
 
     Returns:
         List of FrameTrackingResult, one per successfully read frame.
     """
     # Build ball trajectory for the whole segment
     trajectory = build_trajectory(
-        frames_dir, segment.start_frame, segment.end_frame, fps=30.0,
+        frames_dir, segment.start_frame, segment.end_frame, fps=fps,
     )
 
     # Apply stationarity rejection
