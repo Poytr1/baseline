@@ -7,7 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from court_vision.ball_tracker import BallDetection, detect_ball_in_frame
+from court_vision.ball_tracker import BallDetection, BallTrajectory, build_trajectory, reject_stationary_detections
 from court_vision.scene_filter import GameplaySegment
 
 _PERSON_CLASS_ID = 0
@@ -275,6 +275,9 @@ def track_segment(
 ) -> list[FrameTrackingResult]:
     """Track ball, players, and poses for all frames in a gameplay segment.
 
+    Uses build_trajectory for ball detection (with gap interpolation
+    and stationarity rejection) instead of per-frame detection.
+
     Args:
         frames_dir: Directory containing frame_NNNNNN.jpg files.
         segment: Gameplay segment defining frame range.
@@ -283,6 +286,25 @@ def track_segment(
     Returns:
         List of FrameTrackingResult, one per successfully read frame.
     """
+    # Build ball trajectory for the whole segment
+    trajectory = build_trajectory(
+        frames_dir, segment.start_frame, segment.end_frame, fps=30.0,
+    )
+
+    # Apply stationarity rejection
+    raw_dets: list[BallDetection | None] = [None] * (segment.end_frame - segment.start_frame + 1)
+    for det in trajectory.detections:
+        idx = det.frame_index - segment.start_frame
+        if 0 <= idx < len(raw_dets):
+            raw_dets[idx] = det
+
+    filtered_dets = reject_stationary_detections(raw_dets)
+
+    # Build lookup: frame_index -> filtered ball detection
+    ball_by_frame: dict[int, BallDetection | None] = {}
+    for i, det in enumerate(filtered_dets):
+        ball_by_frame[segment.start_frame + i] = det
+
     results: list[FrameTrackingResult] = []
 
     for frame_idx in range(segment.start_frame, segment.end_frame + 1):
@@ -291,8 +313,8 @@ def track_segment(
         if frame is None:
             continue
 
-        # Ball detection
-        ball = detect_ball_in_frame(frame, frame_index=frame_idx)
+        # Ball from trajectory (already filtered)
+        ball = ball_by_frame.get(frame_idx)
 
         # Player detection + role assignment
         raw_players = detect_players_in_frame(frame, frame_index=frame_idx)

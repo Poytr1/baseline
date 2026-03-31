@@ -383,3 +383,53 @@ class TestRunPipelineWithHeuristicFilter:
         mock_load_model.assert_not_called()
         mock_heuristic.assert_called_once()
         mock_smooth.assert_called_once()
+
+
+class TestTrackSegmentUsesBuildTrajectory:
+    @patch("court_vision.player_detect.estimate_pose")
+    @patch("court_vision.player_detect.detect_players_in_frame")
+    @patch("court_vision.player_detect.build_trajectory")
+    def test_track_segment_calls_build_trajectory(
+        self,
+        mock_build_traj: MagicMock,
+        mock_detect_players: MagicMock,
+        mock_estimate_pose: MagicMock,
+        tmp_path: Path,
+    ):
+        """track_segment uses build_trajectory instead of per-frame detect_ball_in_frame."""
+        import numpy as np
+
+        from court_vision.ball_tracker import BallDetection, BallTrajectory
+        from court_vision.player_detect import track_segment
+        from court_vision.scene_filter import GameplaySegment
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        for i in range(5):
+            img = np.zeros((720, 1280, 3), dtype=np.uint8)
+            import cv2
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
+
+        segment = GameplaySegment(
+            start_frame=0, end_frame=4,
+            start_time_s=0.0, end_time_s=0.13, frame_count=5,
+        )
+
+        mock_build_traj.return_value = BallTrajectory(
+            detections=[
+                BallDetection(frame_index=0, x=100.0, y=200.0, confidence=0.8),
+                BallDetection(frame_index=2, x=150.0, y=250.0, confidence=0.7),
+            ],
+            fps=30.0,
+        )
+        mock_detect_players.return_value = []
+        mock_estimate_pose.return_value = None
+
+        results = track_segment(frames_dir, segment)
+
+        mock_build_traj.assert_called_once()
+        # Frame 0 and 2 should have ball data, frames 1/3/4 should have None
+        ball_frames = {r.frame_index: r.ball for r in results}
+        assert ball_frames.get(0) is not None
+        assert ball_frames.get(2) is not None
+        assert ball_frames.get(1) is None
