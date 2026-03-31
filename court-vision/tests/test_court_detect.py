@@ -487,3 +487,59 @@ class TestDetectCourtWithReprojection:
         # If detection succeeds, it passed reprojection validation
         if result.success:
             assert result.homography is not None
+
+
+class TestMultiFrameSampling:
+    def test_samples_three_frames(self, tmp_path):
+        """compute_segment_homographies tries 3 frames per segment."""
+        from unittest.mock import patch as mock_patch, call
+        from court_vision.court_detect import compute_segment_homographies, CourtDetectionResult
+        from court_vision.scene_filter import GameplaySegment
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        for i in range(20):
+            img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
+
+        segments = [
+            GameplaySegment(start_frame=0, end_frame=19, start_time_s=0.0, end_time_s=0.63, frame_count=20),
+        ]
+
+        # First two calls fail, third succeeds
+        mock_results = [
+            CourtDetectionResult(success=False, num_lines_detected=0),
+            CourtDetectionResult(success=False, num_lines_detected=0),
+            CourtDetectionResult(success=True, homography=np.eye(3), num_lines_detected=6),
+        ]
+
+        with mock_patch("court_vision.court_detect.detect_court", side_effect=mock_results) as mock_detect:
+            results = compute_segment_homographies(frames_dir, segments)
+
+        assert len(results) == 1
+        assert results[0].success is True
+        assert mock_detect.call_count == 3
+
+    def test_returns_best_on_first_success(self, tmp_path):
+        """Stops trying frames after first successful detection."""
+        from unittest.mock import patch as mock_patch
+        from court_vision.court_detect import compute_segment_homographies, CourtDetectionResult
+        from court_vision.scene_filter import GameplaySegment
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        for i in range(20):
+            img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
+
+        segments = [
+            GameplaySegment(start_frame=0, end_frame=19, start_time_s=0.0, end_time_s=0.63, frame_count=20),
+        ]
+
+        mock_result = CourtDetectionResult(success=True, homography=np.eye(3), num_lines_detected=6)
+
+        with mock_patch("court_vision.court_detect.detect_court", return_value=mock_result) as mock_detect:
+            results = compute_segment_homographies(frames_dir, segments)
+
+        assert results[0].success is True
+        assert mock_detect.call_count == 1  # stopped after first success

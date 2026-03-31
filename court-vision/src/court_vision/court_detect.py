@@ -434,8 +434,8 @@ def compute_segment_homographies(
 ) -> list[CourtDetectionResult]:
     """Compute a homography for each gameplay segment.
 
-    Samples the middle frame of each segment for court detection,
-    since the camera position is generally stable within a single point.
+    Samples up to 3 frames per segment (25%, 50%, 75%) and uses the
+    first successful detection.
 
     Args:
         frames_dir: Directory containing frame_NNNNNN.jpg files.
@@ -447,16 +447,31 @@ def compute_segment_homographies(
     results: list[CourtDetectionResult] = []
 
     for segment in segments:
-        # Sample the middle frame of the segment
-        mid_frame = (segment.start_frame + segment.end_frame) // 2
-        frame_path = frames_dir / f"frame_{mid_frame:06d}.jpg"
+        seg_len = segment.end_frame - segment.start_frame
+        # Sample at 25%, 50%, 75% of the segment
+        sample_offsets = [0.25, 0.50, 0.75]
+        sample_frames = [
+            segment.start_frame + int(seg_len * offset)
+            for offset in sample_offsets
+        ]
+        # Deduplicate (short segments may repeat)
+        sample_frames = list(dict.fromkeys(sample_frames))
 
-        frame = cv2.imread(str(frame_path))
-        if frame is None:
-            results.append(CourtDetectionResult(success=False, num_lines_detected=0))
-            continue
+        best_result = CourtDetectionResult(success=False, num_lines_detected=0)
 
-        result = detect_court(frame)
-        results.append(result)
+        for frame_idx in sample_frames:
+            frame_path = frames_dir / f"frame_{frame_idx:06d}.jpg"
+            frame = cv2.imread(str(frame_path))
+            if frame is None:
+                continue
+
+            result = detect_court(frame)
+            if result.success:
+                best_result = result
+                break  # Use first successful detection
+            elif result.num_lines_detected > best_result.num_lines_detected:
+                best_result = result
+
+        results.append(best_result)
 
     return results
