@@ -183,6 +183,67 @@ def interpolate_gaps(
     return result
 
 
+def reject_stationary_detections(
+    detections: list[BallDetection | None],
+    window: int = 5,
+    std_threshold: float = 5.0,
+) -> list[BallDetection | None]:
+    """Reject ball detections that are stationary (false positives).
+
+    For each detection, examines the surrounding window of detections.
+    If the standard deviation of positions within the window is below
+    std_threshold in both x and y, the detection is marked as None.
+
+    Args:
+        detections: List of per-frame detections (None = no detection).
+        window: Number of surrounding detections to consider.
+        std_threshold: Maximum std_dev in pixels to consider stationary.
+
+    Returns:
+        Filtered list with stationary detections replaced by None.
+    """
+    if len(detections) < window:
+        return list(detections)
+
+    result: list[BallDetection | None] = list(detections)
+
+    # Collect all non-None positions
+    non_none_positions = [(d.x, d.y) for d in detections if d is not None]
+
+    if len(non_none_positions) < window:
+        return result
+
+    xs = [p[0] for p in non_none_positions]
+    ys = [p[1] for p in non_none_positions]
+    global_std_x = float(np.std(xs))
+    global_std_y = float(np.std(ys))
+
+    if global_std_x < std_threshold and global_std_y < std_threshold:
+        # All detections are stationary — reject all
+        return [None for _ in detections]
+
+    # Per-window check for local stationarity
+    half = window // 2
+    for i, det in enumerate(detections):
+        if det is None:
+            continue
+
+        # Gather nearby non-None detections
+        start = max(0, i - half)
+        end = min(len(detections), i + half + 1)
+        nearby = [detections[j] for j in range(start, end) if detections[j] is not None]
+
+        if len(nearby) < 3:
+            continue
+
+        local_xs = [d.x for d in nearby]
+        local_ys = [d.y for d in nearby]
+        if float(np.std(local_xs)) < std_threshold and float(np.std(local_ys)) < std_threshold:
+            result[i] = None
+
+    return result
+
+
 def map_ball_to_court(
     detection: BallDetection,
     homography: np.ndarray | None,

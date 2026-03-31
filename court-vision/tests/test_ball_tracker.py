@@ -168,3 +168,66 @@ class TestMapBallToCourt:
         court_x, court_y = map_ball_to_court(det, H)
         assert abs(court_x - 20.0) < 0.1
         assert abs(court_y - 60.0) < 0.1
+
+
+class TestRejectStationaryDetections:
+    def test_rejects_stationary_detections(self):
+        """Detections at the same position are rejected as stationary."""
+        from court_vision.ball_tracker import BallDetection, reject_stationary_detections
+
+        # All detections at nearly the same position (std < 5px)
+        dets = [
+            BallDetection(frame_index=i, x=100.0 + (i % 2), y=200.0 + (i % 2), confidence=0.8)
+            for i in range(10)
+        ]
+        result = reject_stationary_detections(dets)
+        assert all(d is None for d in result)
+
+    def test_preserves_moving_detections(self):
+        """Detections with real motion are preserved."""
+        from court_vision.ball_tracker import BallDetection, reject_stationary_detections
+
+        # Detections moving across the frame
+        dets = [
+            BallDetection(frame_index=i, x=100.0 + i * 20.0, y=200.0 + i * 10.0, confidence=0.8)
+            for i in range(10)
+        ]
+        result = reject_stationary_detections(dets)
+        non_none = [d for d in result if d is not None]
+        assert len(non_none) >= 6
+
+    def test_handles_none_detections(self):
+        """None detections (no ball found) pass through."""
+        from court_vision.ball_tracker import BallDetection, reject_stationary_detections
+
+        dets = [None, None, None]
+        result = reject_stationary_detections(dets)
+        assert all(d is None for d in result)
+
+    def test_handles_sparse_detections(self):
+        """Mix of None and stationary detections."""
+        from court_vision.ball_tracker import BallDetection, reject_stationary_detections
+
+        dets = [
+            BallDetection(frame_index=0, x=100.0, y=200.0, confidence=0.8),
+            None,
+            BallDetection(frame_index=2, x=101.0, y=201.0, confidence=0.8),
+            None,
+            BallDetection(frame_index=4, x=100.5, y=200.5, confidence=0.8),
+        ]
+        result = reject_stationary_detections(dets)
+        # Stationary detections should be rejected, Nones stay None
+        assert result[1] is None
+        assert result[3] is None
+
+    def test_short_sequence_unchanged(self):
+        """Fewer than window_size detections are returned as-is."""
+        from court_vision.ball_tracker import BallDetection, reject_stationary_detections
+
+        dets = [
+            BallDetection(frame_index=0, x=100.0, y=200.0, confidence=0.8),
+            BallDetection(frame_index=1, x=100.0, y=200.0, confidence=0.8),
+        ]
+        result = reject_stationary_detections(dets, window=5)
+        assert len(result) == 2
+        assert all(d is not None for d in result)
