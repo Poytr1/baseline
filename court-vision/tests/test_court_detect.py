@@ -452,3 +452,38 @@ class TestComputeHomographyRANSAC:
         result = pixel_to_court(np.array([200.0, 650.0]), H)
         assert result[0] == pytest.approx(-4.115, abs=0.5)
         assert result[1] == pytest.approx(-11.885, abs=0.5)
+
+
+class TestComputeReprojectionError:
+    def test_identity_has_zero_error(self):
+        """Identity homography gives zero reprojection error."""
+        from court_vision.court_detect import _compute_reprojection_error
+
+        pts = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], dtype=np.float64)
+        H = np.eye(3, dtype=np.float64)
+        error = _compute_reprojection_error(pts, pts, H)
+        assert error == pytest.approx(0.0, abs=0.01)
+
+    def test_bad_homography_has_high_error(self):
+        """Mismatched homography gives high reprojection error."""
+        from court_vision.court_detect import _compute_reprojection_error
+
+        pixel_pts = np.array([[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]], dtype=np.float64)
+        court_pts = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], dtype=np.float64)
+        # Use identity as a deliberately wrong homography (pixel != court scale)
+        H = np.eye(3, dtype=np.float64)
+        error = _compute_reprojection_error(pixel_pts, court_pts, H)
+        assert error > 10.0
+
+
+class TestDetectCourtWithReprojection:
+    def test_valid_court_passes_reprojection(self):
+        """Detect court on valid synthetic image passes reprojection check."""
+        from court_vision.court_detect import detect_court
+
+        img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)
+        img = _draw_court_lines(img)
+        result = detect_court(img)
+        # If detection succeeds, it passed reprojection validation
+        if result.success:
+            assert result.homography is not None

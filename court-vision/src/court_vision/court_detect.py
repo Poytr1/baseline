@@ -230,6 +230,44 @@ def compute_homography(
     return H
 
 
+def _compute_reprojection_error(
+    pixel_pts: np.ndarray,
+    court_pts: np.ndarray,
+    H: np.ndarray,
+) -> float:
+    """Compute mean reprojection error for a homography.
+
+    Projects pixel_pts through H and compares to expected court_pts.
+
+    Args:
+        pixel_pts: Array of shape (N, 2) — pixel coordinates.
+        court_pts: Array of shape (N, 2) — expected court coordinates.
+        H: 3x3 homography matrix.
+
+    Returns:
+        Mean Euclidean distance between projected and expected points.
+    """
+    n = len(pixel_pts)
+    if n == 0:
+        return 0.0
+
+    # Convert to homogeneous coordinates
+    ones = np.ones((n, 1), dtype=np.float64)
+    pixel_h = np.hstack([pixel_pts, ones])  # (N, 3)
+
+    # Project through homography
+    projected_h = (H @ pixel_h.T).T  # (N, 3)
+
+    # Convert from homogeneous
+    w = projected_h[:, 2:3]
+    w = np.where(np.abs(w) < 1e-10, 1.0, w)
+    projected = projected_h[:, :2] / w
+
+    # Compute mean Euclidean distance
+    errors = np.sqrt(np.sum((projected - court_pts) ** 2, axis=1))
+    return float(np.mean(errors))
+
+
 def pixel_to_court(
     pixel_point: np.ndarray,
     homography: np.ndarray,
@@ -367,6 +405,15 @@ def detect_court(frame: np.ndarray) -> CourtDetectionResult:
     # Step 5: Compute homography
     H = compute_homography(pixel_pts, court_pts)
     if H is None:
+        return CourtDetectionResult(
+            success=False,
+            pixel_keypoints=keypoints,
+            num_lines_detected=len(lines),
+        )
+
+    # Step 6: Validate reprojection error
+    reproj_error = _compute_reprojection_error(pixel_pts, court_pts, H)
+    if reproj_error > 10.0:
         return CourtDetectionResult(
             success=False,
             pixel_keypoints=keypoints,
