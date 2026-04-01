@@ -1,8 +1,16 @@
 """TrackNet v2 ball detection — model architecture, weight loading, and inference."""
 
+import logging
+from functools import lru_cache
+from pathlib import Path
+
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
+
+from court_vision.ball_tracker import BallDetection
+from court_vision.device import get_device
 
 
 # TrackNet v2 input/output resolution
@@ -109,3 +117,108 @@ def _extract_ball_position(
     y = float(heatmap_y) / heatmap.shape[0] * original_height
 
     return (x, y, peak_value)
+
+
+logger = logging.getLogger(__name__)
+
+_WEIGHTS_URL = "https://github.com/yastrebksv/TrackNet/releases/download/v2.0/tracknet_v2.pt"
+_CACHE_DIR = Path.home() / ".cache" / "court-vision" / "models"
+_WEIGHTS_FILENAME = "tracknet_v2.pt"
+
+
+def _download_tracknet_weights() -> Path:
+    """Download pretrained TrackNet v2 weights if not cached."""
+    import urllib.request
+
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    weights_path = _CACHE_DIR / _WEIGHTS_FILENAME
+
+    if weights_path.exists():
+        return weights_path
+
+    logger.info("Downloading TrackNet v2 weights to %s...", weights_path)
+    urllib.request.urlretrieve(_WEIGHTS_URL, str(weights_path))
+    logger.info("TrackNet v2 weights downloaded.")
+
+    return weights_path
+
+
+@lru_cache(maxsize=1)
+def _get_tracknet_model() -> TrackNetV2:
+    """Load the TrackNet v2 model (cached singleton)."""
+    weights_path = _download_tracknet_weights()
+    device = get_device()
+
+    model = TrackNetV2()
+
+    if weights_path is not None and weights_path.exists():
+        try:
+            state_dict = torch.load(str(weights_path), map_location=device, weights_only=True)
+            model.load_state_dict(state_dict, strict=False)
+            logger.info("TrackNet v2 weights loaded from %s", weights_path)
+        except Exception as e:
+            logger.warning("Failed to load TrackNet weights: %s. Using random initialization.", e)
+
+    model = model.to(device)
+    model.eval()
+    return model
+
+
+def detect_ball_tracknet(
+    frames: list[np.ndarray],
+    frame_index: int,
+    confidence_threshold: float = 0.5,
+) -> BallDetection | None:
+    """Detect the tennis ball using TrackNet v2.
+
+    Takes exactly 3 consecutive BGR frames, runs TrackNet inference,
+    and returns ball position from the heatmap peak.
+
+    Args:
+        frames: Exactly 3 BGR frames (any resolution, internally resized to 640x360).
+        frame_index: Frame index for the detection result.
+        confidence_threshold: Minimum heatmap peak value to accept.
+
+    Returns:
+        BallDetection with pixel coordinates in original resolution, or None.
+
+    Raises:
+        ValueError: If not exactly 3 frames provided.
+    """
+    if len(frames) != 3:
+        raise ValueError(f"detect_ball_tracknet requires exactly 3 frames, got {len(frames)}")
+
+    original_height, original_width = frames[0].shape[:2]
+    device = get_device()
+    model = _get_tracknet_model()
+
+    # Preprocess: resize to 640x360, convert BGR->RGB, concatenate along channels
+    processed: list[np.ndarray] = []
+    for frame in frames:
+        resized = cv2.resize(frame, (TRACKNET_WIDTH, TRACKNET_HEIGHT))
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        processed.append(rgb)
+
+    # Concatenate channel dim: (360, 640, 9) -> (9, 360, 640)
+    concatenated = np.concatenate(processed, axis=2)
+    tensor = torch.from_numpy(concatenated).permute(2, 0, 1).float() / 255.0
+    tensor = tensor.unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        heatmap_tensor = model(tensor)
+
+    heatmap = heatmap_tensor[0, 0].cpu().numpy()
+
+    result = _extract_ball_position(
+        heatmap, original_width, original_height, confidence_threshold,
+    )
+    if result is None:
+        return None
+
+    x, y, confidence = result
+    return BallDetection(
+        frame_index=frame_index,
+        x=x,
+        y=y,
+        confidence=confidence,
+    )
