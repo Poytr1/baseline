@@ -18,63 +18,112 @@ TRACKNET_WIDTH = 640
 TRACKNET_HEIGHT = 360
 
 
+class _Conv(nn.Module):
+    """Single conv layer: Conv2d -> ReLU -> BatchNorm."""
+
+    def __init__(self, ic: int, oc: int) -> None:
+        super().__init__()
+        self.conv = nn.Conv2d(ic, oc, kernel_size=(3, 3), padding="same")
+        self.bn = nn.BatchNorm2d(oc)
+        self.act = nn.ReLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.bn(self.act(self.conv(x)))
+
+
 class TrackNetV2(nn.Module):
     """TrackNet v2 encoder-decoder for tennis ball detection.
 
-    Input: 9-channel tensor (3 consecutive RGB frames concatenated).
-    Output: 1-channel 640x360 heatmap (ball probability).
+    Architecture matches ChgygLin/TrackNetV2-pytorch for pretrained weight
+    compatibility.  Input: 9-channel tensor (3 consecutive RGB frames
+    concatenated).  Output: 3-channel heatmap (one per input frame).
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
-        # Encoder (VGG-style blocks with batch norm)
-        self.encoder1 = self._conv_block(9, 64, 2)
-        self.pool1 = nn.MaxPool2d(2, 2)
+        # --- Encoder (VGG16-style) ---
 
-        self.encoder2 = self._conv_block(64, 128, 2)
-        self.pool2 = nn.MaxPool2d(2, 2)
+        # Block 1: 9 -> 64
+        self.conv2d_1 = _Conv(9, 64)
+        self.conv2d_2 = _Conv(64, 64)
+        self.max_pooling_1 = nn.MaxPool2d((2, 2), stride=(2, 2))
 
-        self.encoder3 = self._conv_block(128, 256, 3)
+        # Block 2: 64 -> 128
+        self.conv2d_3 = _Conv(64, 128)
+        self.conv2d_4 = _Conv(128, 128)
+        self.max_pooling_2 = nn.MaxPool2d((2, 2), stride=(2, 2))
 
-        # Decoder (transposed convolutions with skip connections)
-        self.decoder3 = nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2)
-        self.decoder3_conv = self._conv_block(256 + 128, 128, 2)
+        # Block 3: 128 -> 256
+        self.conv2d_5 = _Conv(128, 256)
+        self.conv2d_6 = _Conv(256, 256)
+        self.conv2d_7 = _Conv(256, 256)
+        self.max_pooling_3 = nn.MaxPool2d((2, 2), stride=(2, 2))
 
-        self.decoder2 = nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2)
-        self.decoder2_conv = self._conv_block(128 + 64, 64, 2)
+        # Block 4 (bottleneck): 256 -> 512
+        self.conv2d_8 = _Conv(256, 512)
+        self.conv2d_9 = _Conv(512, 512)
+        self.conv2d_10 = _Conv(512, 512)
 
-        self.final = nn.Conv2d(64, 1, kernel_size=1)
-        self.sigmoid = nn.Sigmoid()
+        # --- Decoder (U-Net style with skip connections) ---
 
-    def _conv_block(self, in_ch: int, out_ch: int, num_layers: int) -> nn.Sequential:
-        """VGG-style conv block: (Conv3x3 + BN + ReLU) x num_layers."""
-        layers: list[nn.Module] = []
-        for i in range(num_layers):
-            ch_in = in_ch if i == 0 else out_ch
-            layers.extend([
-                nn.Conv2d(ch_in, out_ch, kernel_size=3, padding=1),
-                nn.BatchNorm2d(out_ch),
-                nn.ReLU(inplace=True),
-            ])
-        return nn.Sequential(*layers)
+        # Upsample + skip from conv2d_7 (512+256=768)
+        self.up_sampling_1 = nn.UpsamplingNearest2d(scale_factor=2)
+        self.conv2d_11 = _Conv(768, 256)
+        self.conv2d_12 = _Conv(256, 256)
+        self.conv2d_13 = _Conv(256, 256)
+
+        # Upsample + skip from conv2d_4 (256+128=384)
+        self.up_sampling_2 = nn.UpsamplingNearest2d(scale_factor=2)
+        self.conv2d_14 = _Conv(384, 128)
+        self.conv2d_15 = _Conv(128, 128)
+
+        # Upsample + skip from conv2d_2 (128+64=192)
+        self.up_sampling_3 = nn.UpsamplingNearest2d(scale_factor=2)
+        self.conv2d_16 = _Conv(192, 64)
+        self.conv2d_17 = _Conv(64, 64)
+
+        # Final 1x1 conv: 64 -> 3 output channels (one heatmap per frame)
+        self.conv2d_18 = nn.Conv2d(64, 3, kernel_size=(1, 1), padding="same")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Encoder: 2 pooling stages (4x spatial reduction)
-        e1 = self.encoder1(x)
-        e2 = self.encoder2(self.pool1(e1))
-        e3 = self.encoder3(self.pool2(e2))
+        # --- Encoder ---
+        x = self.conv2d_1(x)
+        x1 = self.conv2d_2(x)  # skip connection 1 (64 ch)
+        x = self.max_pooling_1(x1)
 
-        # Decoder: 2 upsample stages with skip connections (4x spatial expansion)
-        d3 = self.decoder3(e3)
-        d3 = torch.cat([d3, e2], dim=1)
-        d3 = self.decoder3_conv(d3)
+        x = self.conv2d_3(x)
+        x2 = self.conv2d_4(x)  # skip connection 2 (128 ch)
+        x = self.max_pooling_2(x2)
 
-        d2 = self.decoder2(d3)
-        d2 = torch.cat([d2, e1], dim=1)
-        d2 = self.decoder2_conv(d2)
+        x = self.conv2d_5(x)
+        x = self.conv2d_6(x)
+        x3 = self.conv2d_7(x)  # skip connection 3 (256 ch)
+        x = self.max_pooling_3(x3)
 
-        return self.sigmoid(self.final(d2))
+        x = self.conv2d_8(x)
+        x = self.conv2d_9(x)
+        x = self.conv2d_10(x)  # bottleneck (512 ch)
+
+        # --- Decoder ---
+        x = self.up_sampling_1(x)
+        x = torch.cat([x, x3], dim=1)  # 512+256=768
+        x = self.conv2d_11(x)
+        x = self.conv2d_12(x)
+        x = self.conv2d_13(x)
+
+        x = self.up_sampling_2(x)
+        x = torch.cat([x, x2], dim=1)  # 256+128=384
+        x = self.conv2d_14(x)
+        x = self.conv2d_15(x)
+
+        x = self.up_sampling_3(x)
+        x = torch.cat([x, x1], dim=1)  # 128+64=192
+        x = self.conv2d_16(x)
+        x = self.conv2d_17(x)
+        x = self.conv2d_18(x)
+
+        return torch.sigmoid(x)
 
 
 def _extract_ball_position(
@@ -109,7 +158,7 @@ def _extract_ball_position(
 
 logger = logging.getLogger(__name__)
 
-_WEIGHTS_URL = "https://github.com/yastrebksv/TrackNet/releases/download/v2.0/tracknet_v2.pt"
+_WEIGHTS_URL = "https://github.com/ChgygLin/TrackNetV2-pytorch/releases/download/v0.1/last.pt"
 _CACHE_DIR = Path.home() / ".cache" / "court-vision" / "models"
 _WEIGHTS_FILENAME = "tracknet_v2.pt"
 
@@ -195,7 +244,8 @@ def detect_ball_tracknet(
     with torch.no_grad():
         heatmap_tensor = model(tensor)
 
-    heatmap = heatmap_tensor[0, 0].cpu().numpy()
+    # Model outputs 3 channels (one per frame); use channel 2 (last/current frame)
+    heatmap = heatmap_tensor[0, 2].cpu().numpy()
 
     result = _extract_ball_position(
         heatmap, original_width, original_height, confidence_threshold,

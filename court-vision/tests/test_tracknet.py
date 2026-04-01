@@ -19,7 +19,7 @@ class TestTrackNetV2Architecture:
         x = torch.randn(1, 9, 360, 640)
         with torch.no_grad():
             out = model(x)
-        assert out.shape == (1, 1, 360, 640)
+        assert out.shape == (1, 3, 360, 640)
 
     def test_output_range_is_0_to_1(self):
         """Output heatmap values are in [0, 1] range (sigmoid)."""
@@ -124,8 +124,8 @@ class TestDetectBallTracknet:
         """Returns BallDetection when model produces high-confidence peak."""
         frames = [np.zeros((720, 1280, 3), dtype=np.uint8) for _ in range(3)]
 
-        fake_heatmap = torch.zeros(1, 1, 360, 640)
-        fake_heatmap[0, 0, 180, 320] = 0.9
+        fake_heatmap = torch.zeros(1, 3, 360, 640)
+        fake_heatmap[0, 2, 180, 320] = 0.9
 
         mock_model = MagicMock()
         mock_model.return_value = fake_heatmap
@@ -144,8 +144,8 @@ class TestDetectBallTracknet:
         """Returns None when model output is below threshold."""
         frames = [np.zeros((720, 1280, 3), dtype=np.uint8) for _ in range(3)]
 
-        fake_heatmap = torch.zeros(1, 1, 360, 640)
-        fake_heatmap[0, 0, 180, 320] = 0.2
+        fake_heatmap = torch.zeros(1, 3, 360, 640)
+        fake_heatmap[0, 2, 180, 320] = 0.2
 
         mock_model = MagicMock()
         mock_model.return_value = fake_heatmap
@@ -166,8 +166,8 @@ class TestDetectBallTracknet:
         """Custom confidence_threshold is respected."""
         frames = [np.zeros((720, 1280, 3), dtype=np.uint8) for _ in range(3)]
 
-        fake_heatmap = torch.zeros(1, 1, 360, 640)
-        fake_heatmap[0, 0, 180, 320] = 0.3
+        fake_heatmap = torch.zeros(1, 3, 360, 640)
+        fake_heatmap[0, 2, 180, 320] = 0.3
 
         mock_model = MagicMock()
         mock_model.return_value = fake_heatmap
