@@ -44,10 +44,7 @@ class TrackNetV2(nn.Module):
         self.decoder2 = nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2)
         self.decoder2_conv = self._conv_block(128 + 64, 64, 2)
 
-        self.decoder1 = nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2)
-        self.decoder1_conv = self._conv_block(64, 32, 2)
-
-        self.final = nn.Conv2d(32, 1, kernel_size=1)
+        self.final = nn.Conv2d(64, 1, kernel_size=1)
         self.sigmoid = nn.Sigmoid()
 
     def _conv_block(self, in_ch: int, out_ch: int, num_layers: int) -> nn.Sequential:
@@ -63,12 +60,12 @@ class TrackNetV2(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Encoder
+        # Encoder: 2 pooling stages (4x spatial reduction)
         e1 = self.encoder1(x)
         e2 = self.encoder2(self.pool1(e1))
         e3 = self.encoder3(self.pool2(e2))
 
-        # Decoder with skip connections
+        # Decoder: 2 upsample stages with skip connections (4x spatial expansion)
         d3 = self.decoder3(e3)
         d3 = torch.cat([d3, e2], dim=1)
         d3 = self.decoder3_conv(d3)
@@ -77,16 +74,7 @@ class TrackNetV2(nn.Module):
         d2 = torch.cat([d2, e1], dim=1)
         d2 = self.decoder2_conv(d2)
 
-        d1 = self.decoder1(d2)
-        d1 = self.decoder1_conv(d1)
-
-        out = self.sigmoid(self.final(d1))
-
-        # Resize back to input spatial dims if needed
-        if out.shape[2:] != x.shape[2:]:
-            out = nn.functional.interpolate(out, size=x.shape[2:], mode="bilinear", align_corners=False)
-
-        return out
+        return self.sigmoid(self.final(d2))
 
 
 def _extract_ball_position(
@@ -151,7 +139,7 @@ def _get_tracknet_model() -> TrackNetV2:
 
     model = TrackNetV2()
 
-    if weights_path is not None and weights_path.exists():
+    if weights_path.exists():
         try:
             state_dict = torch.load(str(weights_path), map_location=device, weights_only=True)
             model.load_state_dict(state_dict, strict=False)

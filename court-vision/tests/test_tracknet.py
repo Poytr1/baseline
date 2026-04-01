@@ -1,5 +1,6 @@
 """Tests for TrackNet v2 ball detection module."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -93,10 +94,11 @@ class TestGetTracknetModel:
     @patch("court_vision.tracknet._download_tracknet_weights")
     def test_returns_model_instance(self, mock_download):
         """Returns a TrackNetV2 model in eval mode."""
-        mock_download.return_value = None
+        mock_path = MagicMock(spec=Path)
+        mock_path.exists.return_value = False
+        mock_download.return_value = mock_path
         _get_tracknet_model.cache_clear()
-        with patch("court_vision.tracknet.Path.exists", return_value=False), \
-             patch("court_vision.tracknet.torch.load", return_value={}), \
+        with patch("court_vision.tracknet.torch.load", return_value={}), \
              patch.object(TrackNetV2, "load_state_dict"):
             model = _get_tracknet_model()
         assert isinstance(model, TrackNetV2)
@@ -105,9 +107,10 @@ class TestGetTracknetModel:
 
     def test_caches_model_on_second_call(self):
         """Second call returns same model instance (singleton)."""
+        mock_path = MagicMock(spec=Path)
+        mock_path.exists.return_value = False
         _get_tracknet_model.cache_clear()
-        with patch("court_vision.tracknet._download_tracknet_weights"), \
-             patch("court_vision.tracknet.Path.exists", return_value=False), \
+        with patch("court_vision.tracknet._download_tracknet_weights", return_value=mock_path), \
              patch("court_vision.tracknet.torch.load", return_value={}), \
              patch.object(TrackNetV2, "load_state_dict"):
             model1 = _get_tracknet_model()
