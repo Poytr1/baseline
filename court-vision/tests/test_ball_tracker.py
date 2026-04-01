@@ -1,6 +1,7 @@
 """Tests for the ball tracker module."""
 
 from dataclasses import dataclass
+from unittest.mock import MagicMock, patch
 
 import cv2
 import numpy as np
@@ -259,3 +260,100 @@ class TestDetectBallMinConfidence:
         frame = self._create_frame_with_ball()
         result = detect_ball_in_frame(frame, frame_index=0)
         assert result is not None
+
+
+class TestBuildTrajectoryMethod:
+    def test_hsv_method_uses_detect_ball_in_frame(self, tmp_path):
+        """method='hsv' calls detect_ball_in_frame per frame."""
+        from court_vision.ball_tracker import build_trajectory
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        for i in range(3):
+            img = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
+
+        with patch("court_vision.ball_tracker.detect_ball_in_frame", return_value=None) as mock_hsv:
+            build_trajectory(frames_dir, 0, 2, fps=30.0, method="hsv")
+
+        assert mock_hsv.call_count == 3
+
+    def test_tracknet_method_uses_detect_ball_tracknet(self, tmp_path):
+        """method='tracknet' calls detect_ball_tracknet with 3-frame windows."""
+        from court_vision.ball_tracker import build_trajectory
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        for i in range(5):
+            img = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
+
+        with patch("court_vision.ball_tracker.detect_ball_tracknet", return_value=None) as mock_tn:
+            build_trajectory(frames_dir, 0, 4, fps=30.0, method="tracknet")
+
+        assert mock_tn.call_count == 5
+
+    def test_tracknet_passes_3_frame_buffer(self, tmp_path):
+        """TrackNet receives exactly 3 frames per call."""
+        from court_vision.ball_tracker import build_trajectory
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        for i in range(4):
+            img = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
+
+        call_args = []
+
+        def capture_call(frames, frame_index, **kwargs):
+            call_args.append((len(frames), frame_index))
+            return None
+
+        with patch("court_vision.ball_tracker.detect_ball_tracknet", side_effect=capture_call):
+            build_trajectory(frames_dir, 0, 3, fps=30.0, method="tracknet")
+
+        for num_frames, _ in call_args:
+            assert num_frames == 3
+
+    def test_default_method_is_tracknet(self, tmp_path):
+        """Default method is 'tracknet'."""
+        from court_vision.ball_tracker import build_trajectory
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        for i in range(3):
+            img = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
+
+        with patch("court_vision.ball_tracker.detect_ball_tracknet", return_value=None) as mock_tn:
+            build_trajectory(frames_dir, 0, 2, fps=30.0)
+
+        assert mock_tn.call_count == 3
+
+    def test_early_frames_padded_with_black(self, tmp_path):
+        """First 2 frames are padded with black frames for TrackNet."""
+        from court_vision.ball_tracker import build_trajectory
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        for i in range(3):
+            img = np.ones((480, 640, 3), dtype=np.uint8) * 128
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
+
+        call_frames = []
+
+        def capture_frames(frames, frame_index, **kwargs):
+            has_black = any(np.all(f == 0) for f in frames)
+            call_frames.append((frame_index, has_black))
+            return None
+
+        with patch("court_vision.ball_tracker.detect_ball_tracknet", side_effect=capture_frames):
+            build_trajectory(frames_dir, 0, 2, fps=30.0, method="tracknet")
+
+        # Frame 0: needs 2 black padding frames
+        assert call_frames[0] == (0, True)
+        # Frame 1: needs 1 black padding frame
+        assert call_frames[1] == (1, True)
+        # Frame 2: has all 3 real frames, no padding
+        assert call_frames[2] == (2, False)
+

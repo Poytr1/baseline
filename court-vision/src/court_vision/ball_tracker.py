@@ -104,12 +104,36 @@ class BallTrajectory:
     fps: float
 
 
+def detect_ball_tracknet(
+    frames: "list[np.ndarray]",
+    frame_index: int,
+    **kwargs,
+) -> "BallDetection | None":
+    """Thin wrapper that lazily imports and delegates to tracknet.detect_ball_tracknet.
+
+    This wrapper exists so that tests can patch
+    ``court_vision.ball_tracker.detect_ball_tracknet`` without triggering the
+    circular import that would result from a top-level import of tracknet.
+
+    Args:
+        frames: Exactly 3 BGR frames (any resolution).
+        frame_index: Frame index for the detection result.
+        **kwargs: Forwarded to the real implementation.
+
+    Returns:
+        BallDetection with pixel coordinates, or None.
+    """
+    from court_vision.tracknet import detect_ball_tracknet as _impl
+    return _impl(frames, frame_index, **kwargs)
+
+
 def build_trajectory(
     frames_dir: "Path",
     start_frame: int,
     end_frame: int,
     fps: float,
     max_gap_s: float = 0.5,
+    method: str = "tracknet",
 ) -> BallTrajectory:
     """Build a ball trajectory by detecting the ball in each frame.
 
@@ -119,6 +143,8 @@ def build_trajectory(
         end_frame: Last frame index to process (inclusive).
         fps: Video frame rate.
         max_gap_s: Maximum gap in seconds to interpolate through.
+        method: Detection method — "tracknet" (3-frame sliding window)
+                or "hsv" (per-frame color+contour).
 
     Returns:
         BallTrajectory with detections and interpolated positions.
@@ -128,14 +154,41 @@ def build_trajectory(
     frames_dir = Path(frames_dir)
     raw_detections: list[BallDetection] = []
 
-    for i in range(start_frame, end_frame + 1):
-        frame_path = frames_dir / f"frame_{i:06d}.jpg"
-        frame = cv2.imread(str(frame_path))
-        if frame is None:
-            continue
-        det = detect_ball_in_frame(frame, frame_index=i)
-        if det is not None:
-            raw_detections.append(det)
+    if method == "tracknet":
+        # Read all frames into memory for sliding window
+        frames_cache: dict[int, np.ndarray] = {}
+        for i in range(start_frame, end_frame + 1):
+            frame_path = frames_dir / f"frame_{i:06d}.jpg"
+            frame = cv2.imread(str(frame_path))
+            if frame is not None:
+                frames_cache[i] = frame
+
+        for i in range(start_frame, end_frame + 1):
+            if i not in frames_cache:
+                continue
+
+            # Build 3-frame buffer: [i-2, i-1, i]
+            current = frames_cache[i]
+            h, w = current.shape[:2]
+            black = np.zeros((h, w, 3), dtype=np.uint8)
+
+            frame_minus2 = frames_cache.get(i - 2, black) if i - 2 >= start_frame else black
+            frame_minus1 = frames_cache.get(i - 1, black) if i - 1 >= start_frame else black
+
+            buffer = [frame_minus2, frame_minus1, current]
+            det = detect_ball_tracknet(buffer, frame_index=i)
+            if det is not None:
+                raw_detections.append(det)
+    else:
+        # HSV method: per-frame detection
+        for i in range(start_frame, end_frame + 1):
+            frame_path = frames_dir / f"frame_{i:06d}.jpg"
+            frame = cv2.imread(str(frame_path))
+            if frame is None:
+                continue
+            det = detect_ball_in_frame(frame, frame_index=i)
+            if det is not None:
+                raw_detections.append(det)
 
     interpolated = interpolate_gaps(raw_detections, fps, max_gap_s)
 
