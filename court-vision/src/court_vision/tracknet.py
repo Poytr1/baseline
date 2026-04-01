@@ -1,8 +1,5 @@
 """TrackNet v2 ball detection — model architecture, weight loading, and inference."""
 
-from functools import lru_cache
-from pathlib import Path
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -31,7 +28,6 @@ class TrackNetV2(nn.Module):
         self.pool2 = nn.MaxPool2d(2, 2)
 
         self.encoder3 = self._conv_block(128, 256, 3)
-        self.pool3 = nn.MaxPool2d(2, 2)
 
         # Decoder (transposed convolutions with skip connections)
         self.decoder3 = nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2)
