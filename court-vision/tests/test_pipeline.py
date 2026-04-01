@@ -505,3 +505,116 @@ class TestPipelinePassesHomography:
             passed_H = call_kwargs.args[4] if len(call_kwargs.args) > 4 else None
         assert passed_H is not None
         assert np.array_equal(passed_H, fake_H)
+
+
+class TestPipelineThreadsBallMethod:
+    @patch("court_vision.pipeline.build_match_data")
+    @patch("court_vision.pipeline.track_segment")
+    @patch("court_vision.pipeline.compute_segment_homographies")
+    @patch("court_vision.pipeline.extract_frames")
+    @patch("court_vision.pipeline.filter_gameplay_segments")
+    @patch("court_vision.pipeline.load_scene_model")
+    @patch("court_vision.pipeline.get_device")
+    @patch("court_vision.pipeline.load_config")
+    def test_ball_detection_method_threaded_to_track_segment(
+        self,
+        mock_load_config: MagicMock,
+        mock_get_device: MagicMock,
+        mock_load_model: MagicMock,
+        mock_filter: MagicMock,
+        mock_extract: MagicMock,
+        mock_homographies: MagicMock,
+        mock_track: MagicMock,
+        mock_build_match: MagicMock,
+        tmp_path: Path,
+    ):
+        """ball_detection_method from config is passed to track_segment."""
+        import torch
+
+        from court_vision.config import PipelineConfig, PipelineSettings
+        from court_vision.ingest import FrameSequence
+        from court_vision.scene_filter import GameplaySegment
+
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+
+        config = PipelineConfig(
+            pipeline=PipelineSettings(
+                scene_filter_mode="ml",
+                ball_detection_method="hsv",
+            )
+        )
+        mock_load_config.return_value = config
+        mock_get_device.return_value = torch.device("cpu")
+        mock_load_model.return_value = MagicMock()
+        mock_extract.return_value = FrameSequence(
+            frames_dir=frames_dir, fps=30.0, total_frames=100, resolution=(1280, 720),
+        )
+        mock_filter.return_value = [
+            GameplaySegment(
+                start_frame=0, end_frame=50,
+                start_time_s=0.0, end_time_s=1.67,
+                frame_count=51,
+            ),
+        ]
+        mock_homographies.return_value = []
+        mock_track.return_value = []
+        mock_build_match.return_value = None
+
+        with patch("court_vision.pipeline.classify_frames", return_value=[]):
+            run_pipeline(str(video_path), config_path=None)
+
+        # Verify track_segment was called with ball_method="hsv"
+        call_kwargs = mock_track.call_args
+        assert call_kwargs is not None
+        if call_kwargs.kwargs:
+            assert call_kwargs.kwargs.get("ball_method") == "hsv"
+        else:
+            # ball_method is the 5th positional arg
+            assert call_kwargs.args[4] == "hsv"
+
+
+class TestTrackSegmentThreadsBallMethod:
+    @patch("court_vision.player_detect.estimate_pose")
+    @patch("court_vision.player_detect.detect_players_in_frame")
+    @patch("court_vision.player_detect.build_trajectory")
+    def test_track_segment_passes_ball_method_to_build_trajectory(
+        self,
+        mock_build_traj: MagicMock,
+        mock_detect_players: MagicMock,
+        mock_estimate_pose: MagicMock,
+        tmp_path: Path,
+    ):
+        """track_segment passes ball_method to build_trajectory."""
+        import numpy as np
+
+        from court_vision.ball_tracker import BallTrajectory
+        from court_vision.player_detect import track_segment
+        from court_vision.scene_filter import GameplaySegment
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        for i in range(3):
+            img = np.zeros((720, 1280, 3), dtype=np.uint8)
+            import cv2
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
+
+        segment = GameplaySegment(
+            start_frame=0, end_frame=2,
+            start_time_s=0.0, end_time_s=0.07, frame_count=3,
+        )
+
+        mock_build_traj.return_value = BallTrajectory(detections=[], fps=30.0)
+        mock_detect_players.return_value = []
+        mock_estimate_pose.return_value = None
+
+        track_segment(frames_dir, segment, ball_method="hsv")
+
+        call_kwargs = mock_build_traj.call_args
+        assert call_kwargs is not None
+        if call_kwargs.kwargs:
+            assert call_kwargs.kwargs.get("method") == "hsv"
+        else:
+            assert False, "Expected method='hsv' in build_trajectory kwargs"
