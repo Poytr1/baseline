@@ -255,6 +255,48 @@ def interpolate_gaps(
     return result
 
 
+def smooth_trajectory(
+    detections: list[BallDetection],
+    window: int = 3,
+) -> list[BallDetection]:
+    """Apply moving-average smoothing to ball positions.
+
+    Smooths x and y coordinates independently using a centered
+    moving average. Preserves frame_index, confidence, and
+    interpolated flag. Edge detections use smaller windows.
+
+    Args:
+        detections: Sorted list of ball detections.
+        window: Smoothing window size (must be odd).
+
+    Returns:
+        New list of smoothed detections.
+    """
+    if len(detections) < window:
+        return list(detections)
+
+    half = window // 2
+    smoothed: list[BallDetection] = []
+
+    for i, det in enumerate(detections):
+        start = max(0, i - half)
+        end = min(len(detections), i + half + 1)
+        neighbors = detections[start:end]
+
+        avg_x = sum(d.x for d in neighbors) / len(neighbors)
+        avg_y = sum(d.y for d in neighbors) / len(neighbors)
+
+        smoothed.append(BallDetection(
+            frame_index=det.frame_index,
+            x=avg_x,
+            y=avg_y,
+            confidence=det.confidence,
+            interpolated=det.interpolated,
+        ))
+
+    return smoothed
+
+
 def reject_stationary_detections(
     detections: list[BallDetection | None],
     window: int = 5,

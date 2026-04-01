@@ -335,6 +335,74 @@ class TestDetectBallMinConfidence:
         assert result is not None
 
 
+class TestSmoothTrajectory:
+    def test_reduces_jitter(self):
+        """Smoothing reduces frame-to-frame noise."""
+        from court_vision.ball_tracker import smooth_trajectory
+
+        # Noisy detections along a line: y oscillates ±10 around 200
+        dets = [
+            BallDetection(frame_index=i, x=float(i * 10), y=200.0 + (10.0 if i % 2 == 0 else -10.0), confidence=0.9)
+            for i in range(10)
+        ]
+        smoothed = smooth_trajectory(dets, window=3)
+        assert len(smoothed) == 10
+
+        # Middle detections should have less y-variation than ±10
+        mid_ys = [d.y for d in smoothed[1:-1]]
+        original_ys = [200.0 + (10.0 if i % 2 == 0 else -10.0) for i in range(1, 9)]
+        smooth_var = np.std(mid_ys)
+        orig_var = np.std(original_ys)
+        assert smooth_var < orig_var
+
+    def test_preserves_interpolated_flag(self):
+        """Smoothing does not change interpolated flag."""
+        from court_vision.ball_tracker import smooth_trajectory
+
+        dets = [
+            BallDetection(frame_index=0, x=0.0, y=0.0, confidence=0.9, interpolated=False),
+            BallDetection(frame_index=1, x=10.0, y=10.0, confidence=0.5, interpolated=True),
+            BallDetection(frame_index=2, x=20.0, y=20.0, confidence=0.9, interpolated=False),
+        ]
+        smoothed = smooth_trajectory(dets, window=3)
+        assert smoothed[0].interpolated is False
+        assert smoothed[1].interpolated is True
+        assert smoothed[2].interpolated is False
+
+    def test_short_input_unchanged(self):
+        """Fewer than window detections returned as-is."""
+        from court_vision.ball_tracker import smooth_trajectory
+
+        dets = [BallDetection(frame_index=0, x=10.0, y=20.0, confidence=0.9)]
+        smoothed = smooth_trajectory(dets, window=3)
+        assert len(smoothed) == 1
+        assert smoothed[0].x == 10.0
+
+    def test_preserves_frame_index(self):
+        """Frame indices are preserved after smoothing."""
+        from court_vision.ball_tracker import smooth_trajectory
+
+        dets = [
+            BallDetection(frame_index=i, x=float(i), y=float(i), confidence=0.9)
+            for i in range(5)
+        ]
+        smoothed = smooth_trajectory(dets, window=3)
+        for i, d in enumerate(smoothed):
+            assert d.frame_index == i
+
+    def test_confidence_unchanged(self):
+        """Smoothing does not alter confidence values."""
+        from court_vision.ball_tracker import smooth_trajectory
+
+        dets = [
+            BallDetection(frame_index=i, x=float(i), y=float(i), confidence=0.9 - i * 0.1)
+            for i in range(5)
+        ]
+        smoothed = smooth_trajectory(dets, window=3)
+        for orig, sm in zip(dets, smoothed):
+            assert sm.confidence == orig.confidence
+
+
 class TestBuildTrajectoryMethod:
     def test_hsv_method_uses_detect_ball_in_frame(self, tmp_path):
         """method='hsv' calls detect_ball_in_frame per frame."""
