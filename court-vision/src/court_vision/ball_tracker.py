@@ -200,7 +200,11 @@ def interpolate_gaps(
     fps: float,
     max_gap_s: float = 0.5,
 ) -> list[BallDetection]:
-    """Fill short gaps in ball detections with linear interpolation.
+    """Fill short gaps in ball detections with interpolation.
+
+    Uses quadratic (parabolic) interpolation when enough anchor points
+    are available (>=3 detections total), falling back to linear for
+    only 2 detections. This produces realistic ball arcs under gravity.
 
     Args:
         detections: Sorted list of ball detections (by frame_index).
@@ -214,6 +218,17 @@ def interpolate_gaps(
         return list(detections)
 
     max_gap_frames = int(max_gap_s * fps)
+
+    # Collect anchor points for polynomial fitting
+    anchor_frames = np.array([d.frame_index for d in detections], dtype=np.float64)
+    anchor_x = np.array([d.x for d in detections], dtype=np.float64)
+    anchor_y = np.array([d.y for d in detections], dtype=np.float64)
+
+    # Fit polynomials: quadratic if >=3 points, linear if 2
+    degree = min(2, len(detections) - 1)
+    poly_x = np.polyfit(anchor_frames, anchor_x, degree)
+    poly_y = np.polyfit(anchor_frames, anchor_y, degree)
+
     result: list[BallDetection] = [detections[0]]
 
     for i in range(1, len(detections)):
@@ -223,12 +238,12 @@ def interpolate_gaps(
 
         if 1 < gap <= max_gap_frames:
             for j in range(1, gap):
-                t = j / gap
-                interp_x = prev.x + t * (curr.x - prev.x)
-                interp_y = prev.y + t * (curr.y - prev.y)
+                frame_idx = prev.frame_index + j
+                interp_x = float(np.polyval(poly_x, frame_idx))
+                interp_y = float(np.polyval(poly_y, frame_idx))
                 interp_conf = min(prev.confidence, curr.confidence) * 0.5
                 result.append(BallDetection(
-                    frame_index=prev.frame_index + j,
+                    frame_index=frame_idx,
                     x=interp_x,
                     y=interp_y,
                     confidence=interp_conf,

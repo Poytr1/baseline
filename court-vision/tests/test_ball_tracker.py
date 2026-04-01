@@ -140,6 +140,79 @@ class TestInterpolateGaps:
         assert result[0].interpolated is False
 
 
+class TestInterpolateGapsQuadratic:
+    def test_parabolic_arc_not_linear(self):
+        """Quadratic interpolation produces curved path, not straight line."""
+        from court_vision.ball_tracker import interpolate_gaps
+
+        # Three detections forming an arc: ball goes up then comes down
+        dets = [
+            BallDetection(frame_index=0, x=100.0, y=400.0, confidence=0.9),
+            BallDetection(frame_index=5, x=150.0, y=200.0, confidence=0.9),
+            BallDetection(frame_index=10, x=200.0, y=400.0, confidence=0.9),
+        ]
+        result = interpolate_gaps(dets, fps=30.0, max_gap_s=0.5)
+
+        # Frame 2 and 3 should be interpolated between dets[0] and dets[1]
+        interp_2 = next(d for d in result if d.frame_index == 2)
+        interp_3 = next(d for d in result if d.frame_index == 3)
+
+        # Linear would give y=240 at frame 2, y=280 at frame 3
+        # Quadratic should give different (curved) values
+        # The midpoint (frame 2-3) y should be LOWER (closer to peak)
+        # than linear because the arc curves
+        linear_y_2 = 400.0 + (2 / 5) * (200.0 - 400.0)  # = 320
+        assert abs(interp_2.y - linear_y_2) > 5.0  # meaningfully different from linear
+
+    def test_falls_back_to_linear_with_two_points(self):
+        """With only 2 anchor points, uses linear interpolation."""
+        from court_vision.ball_tracker import interpolate_gaps
+
+        dets = [
+            BallDetection(frame_index=0, x=0.0, y=0.0, confidence=0.9),
+            BallDetection(frame_index=4, x=40.0, y=80.0, confidence=0.9),
+        ]
+        result = interpolate_gaps(dets, fps=30.0, max_gap_s=0.5)
+        interp_2 = next(d for d in result if d.frame_index == 2)
+        # Linear: x=20, y=40
+        assert abs(interp_2.x - 20.0) < 0.1
+        assert abs(interp_2.y - 40.0) < 0.1
+
+    def test_preserves_original_detections(self):
+        """Original (non-interpolated) detections are unchanged."""
+        from court_vision.ball_tracker import interpolate_gaps
+
+        dets = [
+            BallDetection(frame_index=0, x=100.0, y=400.0, confidence=0.9),
+            BallDetection(frame_index=3, x=130.0, y=200.0, confidence=0.85),
+            BallDetection(frame_index=6, x=160.0, y=400.0, confidence=0.9),
+        ]
+        result = interpolate_gaps(dets, fps=30.0, max_gap_s=0.5)
+
+        orig_0 = next(d for d in result if d.frame_index == 0)
+        orig_3 = next(d for d in result if d.frame_index == 3)
+        orig_6 = next(d for d in result if d.frame_index == 6)
+        assert orig_0.x == 100.0 and orig_0.y == 400.0
+        assert orig_3.x == 130.0 and orig_3.y == 200.0
+        assert orig_6.x == 160.0 and orig_6.y == 400.0
+        assert not orig_0.interpolated
+        assert not orig_3.interpolated
+
+    def test_interpolated_flag_still_set(self):
+        """Interpolated detections still have interpolated=True."""
+        from court_vision.ball_tracker import interpolate_gaps
+
+        dets = [
+            BallDetection(frame_index=0, x=0.0, y=0.0, confidence=0.9),
+            BallDetection(frame_index=3, x=30.0, y=30.0, confidence=0.9),
+        ]
+        result = interpolate_gaps(dets, fps=30.0, max_gap_s=0.5)
+        interp_1 = next(d for d in result if d.frame_index == 1)
+        interp_2 = next(d for d in result if d.frame_index == 2)
+        assert interp_1.interpolated is True
+        assert interp_2.interpolated is True
+
+
 class TestMapBallToCourt:
     def _identity_homography(self) -> np.ndarray:
         """Returns an identity homography (pixel = court coords)."""
