@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 
 from court_vision.ball_tracker import BallDetection
+from court_vision.court_detect import COURT_KEYPOINTS
 from court_vision.player_detect import (
     FrameTrackingResult,
     PlayerDetection,
@@ -16,6 +17,7 @@ NEAR_PLAYER_COLOR = (0, 255, 0)  # Green
 FAR_PLAYER_COLOR = (0, 0, 255)   # Red
 POSE_COLOR = (255, 255, 0)       # Cyan
 POSE_LINK_COLOR = (200, 200, 0)  # Light cyan
+COURT_LINE_COLOR = (255, 255, 255)  # White
 
 # Pose skeleton connections (pairs of keypoint names)
 SKELETON_LINKS = [
@@ -100,19 +102,86 @@ def draw_poses(frame: np.ndarray, poses: list[PoseKeypoints]) -> np.ndarray:
     return out
 
 
-def render_overlay(frame: np.ndarray, tracking: FrameTrackingResult) -> np.ndarray:
+# Court line connections as pairs of COURT_KEYPOINTS names.
+COURT_LINE_CONNECTIONS = [
+    # Near baseline
+    ("baseline_near_left_doubles", "baseline_near_right_doubles"),
+    # Far baseline
+    ("baseline_far_left_doubles", "baseline_far_right_doubles"),
+    # Left singles sideline
+    ("baseline_near_left_singles", "baseline_far_left_singles"),
+    # Right singles sideline
+    ("baseline_near_right_singles", "baseline_far_right_singles"),
+    # Left doubles sideline
+    ("baseline_near_left_doubles", "baseline_far_left_doubles"),
+    # Right doubles sideline
+    ("baseline_near_right_doubles", "baseline_far_right_doubles"),
+    # Near service line
+    ("service_near_left", "service_near_right"),
+    # Far service line
+    ("service_far_left", "service_far_right"),
+    # Center service line
+    ("service_near_center", "service_far_center"),
+    # Net
+    ("net_left_doubles", "net_right_doubles"),
+]
+
+
+def draw_court(frame: np.ndarray, homography: np.ndarray | None) -> np.ndarray:
+    """Draw court lines projected onto the frame.
+
+    Args:
+        frame: BGR image (H, W, 3).
+        homography: 3x3 pixel-to-court homography, or None.
+
+    Returns:
+        Copy of frame with court lines drawn.
+    """
+    out = frame.copy()
+    if homography is None:
+        return out
+
+    # Inverse homography: court (meters) -> pixel coordinates
+    H_inv = np.linalg.inv(homography)
+
+    # Project all court keypoints to pixel space
+    pixel_pts: dict[str, tuple[int, int]] = {}
+    for name, (cx, cy) in COURT_KEYPOINTS.items():
+        court_h = np.array([cx, cy, 1.0], dtype=np.float64)
+        px_h = H_inv @ court_h
+        w = px_h[2]
+        if abs(w) < 1e-10:
+            continue
+        pixel_pts[name] = (int(px_h[0] / w), int(px_h[1] / w))
+
+    # Draw each court line
+    for name_a, name_b in COURT_LINE_CONNECTIONS:
+        if name_a in pixel_pts and name_b in pixel_pts:
+            cv2.line(out, pixel_pts[name_a], pixel_pts[name_b],
+                     COURT_LINE_COLOR, 2)
+
+    return out
+
+
+def render_overlay(
+    frame: np.ndarray,
+    tracking: FrameTrackingResult,
+    homography: np.ndarray | None = None,
+) -> np.ndarray:
     """Render all overlays for a single frame.
 
-    Combines ball, player, and pose overlays.
+    Combines court, ball, player, and pose overlays.
 
     Args:
         frame: BGR image (H, W, 3).
         tracking: Per-frame tracking data.
+        homography: 3x3 pixel-to-court homography for court line overlay.
 
     Returns:
         Copy of frame with all overlays drawn.
     """
     out = frame.copy()
+    out = draw_court(out, homography)
     if tracking.ball is not None:
         out = draw_ball(out, tracking.ball)
     if tracking.players:

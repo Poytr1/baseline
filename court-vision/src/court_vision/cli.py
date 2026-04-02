@@ -45,6 +45,101 @@ def process(
 
 
 @app.command()
+def preview(
+    source: str = typer.Argument(help="YouTube URL or path to a local video file."),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output video path."),
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file."),
+    scene_weights: Optional[Path] = typer.Option(None, "--scene-weights", help="Scene filter weights."),
+) -> None:
+    """Generate a preview video with overlay annotations."""
+    import os
+    import subprocess
+    import tempfile
+
+    import cv2
+    import numpy as np
+
+    from court_vision.overlay import render_overlay
+    from court_vision.pipeline import run_pipeline
+    from court_vision.player_detect import FrameTrackingResult
+
+    result = run_pipeline(
+        source=source,
+        config_path=config,
+        scene_weights_path=scene_weights,
+    )
+
+    # Build frame_index -> tracking lookup
+    tracking_by_frame: dict[int, FrameTrackingResult] = {}
+    if result.tracking_results:
+        for t in result.tracking_results:
+            tracking_by_frame[t.frame_index] = t
+
+    # Extract best court homography (first successful detection)
+    court_homography: np.ndarray | None = None
+    if result.court_detections:
+        for det in result.court_detections:
+            if det.success and det.homography is not None:
+                court_homography = det.homography
+                break
+
+    # Determine output path
+    if output is None:
+        source_path = Path(source)
+        output = source_path.parent / f"{source_path.stem}_preview.mp4"
+
+    # Collect and sort frame files
+    frame_files = sorted(result.frames_dir.glob("frame_*.jpg"))
+    if not frame_files:
+        typer.echo("No frames found to render.", err=True)
+        raise typer.Exit(1)
+
+    # Read first frame to get dimensions
+    first_frame = cv2.imread(str(frame_files[0]))
+    h, w = first_frame.shape[:2]
+
+    # Write intermediate video with mp4v codec
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(tmp_fd)
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(tmp_path, fourcc, result.fps, (w, h))
+
+    for frame_file in frame_files:
+        frame = cv2.imread(str(frame_file))
+        if frame is None:
+            continue
+
+        # Extract frame index from filename (frame_NNNNNN.jpg)
+        frame_index = int(frame_file.stem.split("_")[1])
+
+        tracking = tracking_by_frame.get(
+            frame_index,
+            FrameTrackingResult(frame_index=frame_index, ball=None, players=[], poses=[]),
+        )
+
+        overlay_frame = render_overlay(frame, tracking, homography=court_homography)
+        writer.write(overlay_frame)
+
+    writer.release()
+
+    # Re-encode with ffmpeg to H.264
+    subprocess.run(
+        [
+            "ffmpeg", "-i", tmp_path,
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-y", str(output),
+        ],
+        capture_output=True,
+    )
+
+    # Clean up intermediate file
+    Path(tmp_path).unlink(missing_ok=True)
+
+    typer.echo(f"Preview saved to {output}")
+
+
+@app.command()
 def export(
     match_json: Path = typer.Argument(help="Path to match data JSON file."),
     format: str = typer.Option("json", "--format", "-f", help="Output format: json or csv."),

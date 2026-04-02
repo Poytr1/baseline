@@ -119,3 +119,50 @@ class TestRenderOverlay:
         result = render_overlay(frame, tracking)
 
         assert result.shape == frame.shape
+
+
+class TestDrawCourt:
+    def test_draws_court_lines(self):
+        """draw_court renders court lines when given a valid homography."""
+        from court_vision.overlay import draw_court
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        # Homography: pixel -> court coordinates.
+        # Court X range: approx -5.5 to +5.5 -> map to 0..640
+        # Court Y range: approx -12 to +12 -> map to 0..480
+        sx = 640.0 / 11.0  # ~58 px per meter
+        sy = 480.0 / 24.0  # ~20 px per meter
+        # court_x = (px - 320) / sx, court_y = (py - 240) / sy
+        H = np.array([
+            [1.0 / sx, 0.0, -320.0 / sx],
+            [0.0, 1.0 / sy, -240.0 / sy],
+            [0.0, 0.0, 1.0],
+        ], dtype=np.float64)
+
+        result = draw_court(frame, H)
+
+        # Court lines should have been drawn — frame should have non-zero pixels
+        assert result.sum() > 0
+
+    def test_returns_copy(self):
+        """draw_court does not modify the original frame."""
+        from court_vision.overlay import draw_court
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        H = np.eye(3, dtype=np.float64)
+
+        result = draw_court(frame, H)
+
+        assert result is not frame
+        assert frame.sum() == 0  # Original unchanged
+
+    def test_no_homography_returns_copy(self):
+        """draw_court with None homography returns unchanged copy."""
+        from court_vision.overlay import draw_court
+
+        frame = np.full((480, 640, 3), 42, dtype=np.uint8)
+
+        result = draw_court(frame, None)
+
+        assert result is not frame
+        np.testing.assert_array_equal(result, frame)

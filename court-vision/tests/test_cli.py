@@ -179,3 +179,63 @@ class TestReviewCommand:
         mock_run.assert_called_once()
         call_args = mock_run.call_args[0][0]
         assert "streamlit" in str(call_args)
+
+
+class TestPreviewCommand:
+    @patch("subprocess.run")
+    @patch("cv2.VideoWriter")
+    @patch("court_vision.pipeline.run_pipeline")
+    def test_preview_invokes_pipeline_and_writes_video(
+        self, mock_pipeline: MagicMock, mock_writer_cls: MagicMock,
+        mock_subprocess: MagicMock, tmp_path: Path,
+    ):
+        """Preview command runs the pipeline and produces an output video."""
+        import numpy as np
+
+        from court_vision.ball_tracker import BallDetection
+        from court_vision.court_detect import CourtDetectionResult
+        from court_vision.player_detect import FrameTrackingResult, PlayerDetection
+        from court_vision.scene_filter import GameplaySegment
+
+        # Create a fake frames directory with one frame
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        fake_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        import cv2
+        cv2.imwrite(str(frames_dir / "frame_000000.jpg"), fake_frame)
+
+        mock_pipeline.return_value = MagicMock(
+            source="test.mp4",
+            total_frames=1,
+            fps=30.0,
+            frames_dir=frames_dir,
+            gameplay_segments=[
+                GameplaySegment(start_frame=0, end_frame=0, start_time_s=0.0, end_time_s=0.0, frame_count=1),
+            ],
+            gameplay_frame_count=1,
+            court_detections=[
+                CourtDetectionResult(success=True, homography=np.eye(3), num_lines_detected=7),
+            ],
+            tracking_results=[
+                FrameTrackingResult(
+                    frame_index=0,
+                    ball=BallDetection(frame_index=0, x=300.0, y=200.0, confidence=0.8),
+                    players=[
+                        PlayerDetection(frame_index=0, bbox=(100.0, 300.0, 200.0, 600.0), confidence=0.9, role="near_player"),
+                    ],
+                    poses=[],
+                ),
+            ],
+        )
+
+        # Mock VideoWriter instance
+        mock_writer = MagicMock()
+        mock_writer_cls.return_value = mock_writer
+
+        output_file = tmp_path / "preview.mp4"
+        result = runner.invoke(app, ["preview", "test.mp4", "--output", str(output_file)])
+
+        assert result.exit_code == 0, result.output
+        mock_pipeline.assert_called_once()
+        mock_writer.write.assert_called()
+        mock_subprocess.assert_called_once()  # ffmpeg re-encode
