@@ -201,11 +201,11 @@ def interpolate_gaps(
     fps: float,
     max_gap_s: float = 0.5,
 ) -> list[BallDetection]:
-    """Fill short gaps in ball detections with interpolation.
+    """Fill short gaps in ball detections with locally-fit interpolation.
 
-    Uses quadratic (parabolic) interpolation when enough anchor points
-    are available (>=3 detections total), falling back to linear for
-    only 2 detections. This produces realistic ball arcs under gravity.
+    For each gap, fits a quadratic polynomial to nearby anchor points
+    (up to 2 detections on each side of the gap). Falls back to linear
+    when fewer than 3 local anchors are available.
 
     Args:
         detections: Sorted list of ball detections (by frame_index).
@@ -219,17 +219,6 @@ def interpolate_gaps(
         return list(detections)
 
     max_gap_frames = int(max_gap_s * fps)
-
-    # Collect anchor points for polynomial fitting
-    anchor_frames = np.array([d.frame_index for d in detections], dtype=np.float64)
-    anchor_x = np.array([d.x for d in detections], dtype=np.float64)
-    anchor_y = np.array([d.y for d in detections], dtype=np.float64)
-
-    # Fit polynomials: quadratic if >=3 points, linear if 2
-    degree = min(2, len(detections) - 1)
-    poly_x = np.polyfit(anchor_frames, anchor_x, degree)
-    poly_y = np.polyfit(anchor_frames, anchor_y, degree)
-
     result: list[BallDetection] = [detections[0]]
 
     for i in range(1, len(detections)):
@@ -238,6 +227,19 @@ def interpolate_gaps(
         gap = curr.frame_index - prev.frame_index
 
         if 1 < gap <= max_gap_frames:
+            # Gather local anchors: up to 2 before gap, up to 2 after
+            before = detections[max(0, i - 2):i]
+            after = detections[i:min(len(detections), i + 2)]
+            local_anchors = before + after
+
+            anchor_frames = np.array([d.frame_index for d in local_anchors], dtype=np.float64)
+            anchor_x = np.array([d.x for d in local_anchors], dtype=np.float64)
+            anchor_y = np.array([d.y for d in local_anchors], dtype=np.float64)
+
+            degree = min(2, len(local_anchors) - 1)
+            poly_x = np.polyfit(anchor_frames, anchor_x, degree)
+            poly_y = np.polyfit(anchor_frames, anchor_y, degree)
+
             for j in range(1, gap):
                 frame_idx = prev.frame_index + j
                 interp_x = float(np.polyval(poly_x, frame_idx))

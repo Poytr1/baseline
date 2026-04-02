@@ -213,6 +213,43 @@ class TestInterpolateGapsQuadratic:
         assert interp_2.interpolated is True
 
 
+class TestInterpolateGapsLocal:
+    def test_local_fit_stays_near_anchors(self):
+        """Local fitting keeps interpolated points near gap endpoints, not global trend."""
+        from court_vision.ball_tracker import interpolate_gaps
+
+        # Ball goes right then reverses left — global quadratic would overshoot
+        dets = [
+            BallDetection(frame_index=0, x=100.0, y=200.0, confidence=0.9),
+            BallDetection(frame_index=5, x=300.0, y=100.0, confidence=0.9),
+            BallDetection(frame_index=10, x=500.0, y=200.0, confidence=0.9),
+            # Gap here (frames 11-14)
+            BallDetection(frame_index=15, x=400.0, y=300.0, confidence=0.9),
+            BallDetection(frame_index=20, x=200.0, y=400.0, confidence=0.9),
+        ]
+        result = interpolate_gaps(dets, fps=30.0, max_gap_s=0.5)
+
+        # Interpolated frame 12 should be between det[2] (500,200) and det[3] (400,300)
+        # With local fitting, x should be ~480, y ~240 (between 200 and 300)
+        # With global fitting, x could be wildly off
+        interp_12 = next(d for d in result if d.frame_index == 12)
+        assert 350.0 < interp_12.x < 550.0  # stays near local anchors
+        assert 150.0 < interp_12.y < 350.0
+
+    def test_two_point_gap_uses_linear(self):
+        """Gap with only 2 neighboring anchors uses linear interpolation."""
+        from court_vision.ball_tracker import interpolate_gaps
+
+        dets = [
+            BallDetection(frame_index=0, x=0.0, y=0.0, confidence=0.9),
+            BallDetection(frame_index=4, x=40.0, y=80.0, confidence=0.9),
+        ]
+        result = interpolate_gaps(dets, fps=30.0, max_gap_s=0.5)
+        interp_2 = next(d for d in result if d.frame_index == 2)
+        assert abs(interp_2.x - 20.0) < 0.1
+        assert abs(interp_2.y - 40.0) < 0.1
+
+
 class TestMapBallToCourt:
     def _identity_homography(self) -> np.ndarray:
         """Returns an identity homography (pixel = court coords)."""
