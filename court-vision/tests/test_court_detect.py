@@ -55,6 +55,133 @@ def _draw_court_lines(img: np.ndarray) -> np.ndarray:
     return img
 
 
+class TestClusterLines:
+    def test_merges_similar_horizontal_lines(self):
+        """Horizontal lines at similar y-positions cluster into one."""
+        from court_vision.court_detect import cluster_lines
+
+        lines = [
+            ((100, 300), (900, 302)),
+            ((150, 298), (850, 301)),
+            ((120, 299), (880, 303)),
+        ]
+        result = cluster_lines(lines, rho_threshold=20.0, theta_threshold=10.0)
+        assert len(result) == 1
+
+    def test_keeps_distinct_lines(self):
+        """Lines at different positions remain separate."""
+        from court_vision.court_detect import cluster_lines
+
+        lines = [
+            ((100, 100), (900, 100)),   # y=100
+            ((100, 400), (900, 400)),   # y=400
+            ((100, 650), (900, 650)),   # y=650
+        ]
+        result = cluster_lines(lines, rho_threshold=20.0, theta_threshold=10.0)
+        assert len(result) == 3
+
+    def test_merges_similar_vertical_lines(self):
+        """Vertical lines at similar x-positions cluster into one."""
+        from court_vision.court_detect import cluster_lines
+
+        lines = [
+            ((500, 100), (502, 600)),
+            ((498, 150), (501, 550)),
+        ]
+        result = cluster_lines(lines, rho_threshold=20.0, theta_threshold=10.0)
+        assert len(result) == 1
+
+    def test_empty_input(self):
+        """Returns empty list for empty input."""
+        from court_vision.court_detect import cluster_lines
+
+        result = cluster_lines([], rho_threshold=20.0, theta_threshold=10.0)
+        assert result == []
+
+    def test_single_line(self):
+        """Single line returns unchanged."""
+        from court_vision.court_detect import cluster_lines
+
+        lines = [((100, 300), (900, 300))]
+        result = cluster_lines(lines, rho_threshold=20.0, theta_threshold=10.0)
+        assert len(result) == 1
+
+
+class TestFilterMarginLines:
+    def test_removes_top_margin_lines(self):
+        """Lines in the top scoreboard area are filtered out."""
+        from court_vision.court_detect import _filter_margin_lines
+
+        lines = [
+            ((100, 50), (900, 52)),    # top 7% — scoreboard
+            ((100, 300), (900, 302)),   # mid frame — court
+        ]
+        result = _filter_margin_lines(lines, frame_height=720, top_margin=0.15)
+        assert len(result) == 1
+        assert result[0][0][1] == 300  # kept the mid-frame line
+
+    def test_keeps_court_area_lines(self):
+        """Lines in the court area are kept."""
+        from court_vision.court_detect import _filter_margin_lines
+
+        lines = [
+            ((100, 200), (900, 200)),   # 28% down
+            ((100, 400), (900, 400)),   # 56% down
+            ((100, 600), (900, 600)),   # 83% down
+        ]
+        result = _filter_margin_lines(lines, frame_height=720, top_margin=0.15)
+        assert len(result) == 3
+
+    def test_empty_input(self):
+        """Returns empty list for empty input."""
+        from court_vision.court_detect import _filter_margin_lines
+
+        result = _filter_margin_lines([], frame_height=720)
+        assert result == []
+
+
+class TestSelectCourtQuad:
+    def test_selects_quad_from_court_keypoints(self):
+        """Finds a valid quadrilateral from typical court intersection points."""
+        from court_vision.court_detect import _select_court_quad
+
+        # Simulate a perspective-projected court: trapezoid wider at bottom
+        keypoints = [
+            (200.0, 650.0),   # near-left (bottom-left)
+            (1080.0, 650.0),  # near-right (bottom-right)
+            (880.0, 150.0),   # far-right (top-right)
+            (400.0, 150.0),   # far-left (top-left)
+            (640.0, 400.0),   # center point (interior)
+        ]
+        result = _select_court_quad(keypoints, frame_width=1280, frame_height=720)
+        assert result is not None
+        pixel_pts, court_pts = result
+        assert pixel_pts.shape == (4, 2)
+        assert court_pts.shape == (4, 2)
+
+    def test_returns_none_with_too_few_points(self):
+        """Returns None with fewer than 4 keypoints."""
+        from court_vision.court_detect import _select_court_quad
+
+        result = _select_court_quad([(100.0, 100.0), (200.0, 200.0)],
+                                     frame_width=1280, frame_height=720)
+        assert result is None
+
+    def test_rejects_tiny_quad(self):
+        """Rejects a quadrilateral that is too small (less than 5% of frame)."""
+        from court_vision.court_detect import _select_court_quad
+
+        # 4 points forming a tiny quad
+        keypoints = [
+            (600.0, 400.0),
+            (620.0, 400.0),
+            (620.0, 420.0),
+            (600.0, 420.0),
+        ]
+        result = _select_court_quad(keypoints, frame_width=1280, frame_height=720)
+        assert result is None
+
+
 class TestDetectCourtLines:
     def test_detects_lines_on_synthetic_court(self):
         """Detects lines from a synthetic court image."""

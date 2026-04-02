@@ -133,6 +133,92 @@ def classify_lines(
     return horizontal, vertical
 
 
+def cluster_lines(
+    lines: list[tuple[tuple[int, int], tuple[int, int]]],
+    rho_threshold: float = 20.0,
+    theta_threshold: float = 10.0,
+) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+    """Cluster similar lines and merge each cluster into a single representative.
+
+    Converts each line segment to polar form (rho, theta), then greedily
+    clusters lines that are within rho_threshold (pixels) and
+    theta_threshold (degrees) of each other. Each cluster is merged by
+    averaging the endpoints.
+
+    Args:
+        lines: Line segments as ((x1, y1), (x2, y2)).
+        rho_threshold: Max distance (pixels) between lines in same cluster.
+        theta_threshold: Max angular difference (degrees) in same cluster.
+
+    Returns:
+        Merged representative lines, one per cluster.
+    """
+    if not lines:
+        return []
+
+    # Convert to Hessian normal form (rho, theta) for each line.
+    # theta is the angle of the line's *normal*, not the line direction.
+    polar: list[tuple[float, float]] = []
+    for (x1, y1), (x2, y2) in lines:
+        dx = x2 - x1
+        dy = y2 - y1
+        # Normal angle = line direction + 90°
+        theta = np.arctan2(dy, dx) + np.pi / 2
+        # Normalize theta to [0, pi)
+        if theta < 0:
+            theta += np.pi
+        if theta >= np.pi:
+            theta -= np.pi
+        # Compute rho = perpendicular distance from origin using midpoint
+        mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+        rho = mx * np.cos(theta) + my * np.sin(theta)
+        polar.append((rho, theta))
+
+    theta_thresh_rad = np.radians(theta_threshold)
+    used = [False] * len(lines)
+    merged: list[tuple[tuple[int, int], tuple[int, int]]] = []
+
+    for i in range(len(lines)):
+        if used[i]:
+            continue
+        cluster_indices = [i]
+        used[i] = True
+
+        for j in range(i + 1, len(lines)):
+            if used[j]:
+                continue
+            # Check angular similarity
+            dtheta = abs(polar[i][1] - polar[j][1])
+            dtheta = min(dtheta, np.pi - dtheta)  # handle wrap-around
+            if dtheta > theta_thresh_rad:
+                continue
+            # Check distance similarity
+            drho = abs(polar[i][0] - polar[j][0])
+            if drho > rho_threshold:
+                continue
+            cluster_indices.append(j)
+            used[j] = True
+
+        # Merge cluster: average all endpoints
+        sum_x1, sum_y1, sum_x2, sum_y2 = 0.0, 0.0, 0.0, 0.0
+        for idx in cluster_indices:
+            (x1, y1), (x2, y2) = lines[idx]
+            # Ensure consistent direction (left-to-right or top-to-bottom)
+            if x1 > x2 or (x1 == x2 and y1 > y2):
+                x1, y1, x2, y2 = x2, y2, x1, y1
+            sum_x1 += x1
+            sum_y1 += y1
+            sum_x2 += x2
+            sum_y2 += y2
+        n = len(cluster_indices)
+        merged.append((
+            (int(sum_x1 / n), int(sum_y1 / n)),
+            (int(sum_x2 / n), int(sum_y2 / n)),
+        ))
+
+    return merged
+
+
 def find_line_intersection(
     line1: tuple[tuple[int, int], tuple[int, int]],
     line2: tuple[tuple[int, int], tuple[int, int]],
@@ -363,11 +449,138 @@ class CourtDetectionResult:
     num_lines_detected: int = 0
 
 
+def _filter_margin_lines(
+    lines: list[tuple[tuple[int, int], tuple[int, int]]],
+    frame_height: int,
+    top_margin: float = 0.15,
+    bottom_margin: float = 0.95,
+) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+    """Remove lines that lie in the top or bottom margin of the frame.
+
+    Lines whose midpoint falls in the top margin (scoreboard/overlay area)
+    or bottom margin (letterbox/banner area) are unlikely to be court lines.
+
+    Args:
+        lines: Line segments as ((x1, y1), (x2, y2)).
+        frame_height: Image height in pixels.
+        top_margin: Fraction of frame height to exclude from top (0.15 = top 15%).
+        bottom_margin: Fraction of frame height above which to exclude (0.95 = bottom 5%).
+
+    Returns:
+        Filtered list of lines.
+    """
+    top_px = frame_height * top_margin
+    bottom_px = frame_height * bottom_margin
+    result = []
+    for (x1, y1), (x2, y2) in lines:
+        mid_y = (y1 + y2) / 2
+        if top_px <= mid_y <= bottom_px:
+            result.append(((x1, y1), (x2, y2)))
+    return result
+
+
+def _select_court_quad(
+    keypoints: list[tuple[float, float]],
+    frame_width: int,
+    frame_height: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Select the best quadrilateral of keypoints matching a perspective court.
+
+    Instead of naive outermost-corner selection, finds the largest convex
+    quadrilateral among keypoints that is consistent with a perspective-
+    projected rectangle: ordered corners, positive area, and reasonable
+    aspect ratio.
+
+    Args:
+        keypoints: Candidate intersection points as (x, y).
+        frame_width: Image width.
+        frame_height: Image height.
+
+    Returns:
+        Tuple of (pixel_points, court_points) as (4, 2) arrays mapping to
+        singles court corners, or None if no valid quadrilateral found.
+    """
+    if len(keypoints) < 4:
+        return None
+
+    pts = np.array(keypoints, dtype=np.float64)
+
+    # Use convex hull to find the outer boundary of keypoints
+    if len(pts) < 3:
+        return None
+
+    hull = cv2.convexHull(pts.astype(np.float32))
+    hull_pts = hull.squeeze()
+    if hull_pts.ndim != 2 or len(hull_pts) < 4:
+        # If hull has fewer than 4 points, use what we have
+        if len(hull_pts) < 4:
+            return None
+
+    # Approximate the hull with 4 points (a quadrilateral)
+    peri = cv2.arcLength(hull, closed=True)
+    # Try progressively looser approximation until we get 4 points
+    for eps_mult in [0.02, 0.04, 0.06, 0.08, 0.10, 0.15, 0.20]:
+        approx = cv2.approxPolyDP(hull, eps_mult * peri, closed=True)
+        if len(approx) == 4:
+            break
+    else:
+        # Fallback: if we can't get exactly 4, take the 4 hull points
+        # with maximum enclosed area
+        if len(hull_pts) >= 4:
+            approx = hull_pts[:4].reshape(-1, 1, 2)
+        else:
+            return None
+
+    quad = approx.squeeze().astype(np.float64)
+    if quad.shape != (4, 2):
+        return None
+
+    # Order the quad: top-left, top-right, bottom-right, bottom-left
+    # Sum of coords: smallest = top-left, largest = bottom-right
+    # Diff of coords: smallest = top-right, largest = bottom-left
+    s = quad.sum(axis=1)
+    d = np.diff(quad, axis=1).squeeze()
+
+    tl = quad[np.argmin(s)]  # far-left (top-left in image = far-left on court)
+    br = quad[np.argmax(s)]  # near-right (bottom-right in image)
+    tr = quad[np.argmin(d)]  # far-right (top-right in image)
+    bl = quad[np.argmax(d)]  # near-left (bottom-left in image)
+
+    # Validate: the quad should have reasonable area
+    # and the "near" side (bl-br) should be below the "far" side (tl-tr)
+    near_y = (bl[1] + br[1]) / 2
+    far_y = (tl[1] + tr[1]) / 2
+    if near_y <= far_y:
+        return None  # inverted — not a valid perspective court
+
+    # Check minimum area (at least 5% of frame)
+    area = cv2.contourArea(np.array([tl, tr, br, bl], dtype=np.float32))
+    min_area = frame_width * frame_height * 0.05
+    if area < min_area:
+        return None
+
+    # Map: bl=near-left, br=near-right, tr=far-right, tl=far-left
+    pixel_pts = np.array([bl, br, tr, tl], dtype=np.float64)
+
+    court_pts = np.array([
+        [COURT_KEYPOINTS["baseline_near_left_singles"][0],
+         COURT_KEYPOINTS["baseline_near_left_singles"][1]],
+        [COURT_KEYPOINTS["baseline_near_right_singles"][0],
+         COURT_KEYPOINTS["baseline_near_right_singles"][1]],
+        [COURT_KEYPOINTS["baseline_far_right_singles"][0],
+         COURT_KEYPOINTS["baseline_far_right_singles"][1]],
+        [COURT_KEYPOINTS["baseline_far_left_singles"][0],
+         COURT_KEYPOINTS["baseline_far_left_singles"][1]],
+    ], dtype=np.float64)
+
+    return pixel_pts, court_pts
+
+
 def detect_court(frame: np.ndarray) -> CourtDetectionResult:
     """Detect the tennis court in a frame and compute the homography.
 
-    Full pipeline: detect lines -> classify -> extract keypoints ->
-    match to court -> compute homography.
+    Full pipeline: detect lines -> filter margins -> classify -> cluster ->
+    extract keypoints -> select court quad -> compute homography.
 
     Args:
         frame: BGR image as numpy array (H, W, 3).
@@ -375,8 +588,15 @@ def detect_court(frame: np.ndarray) -> CourtDetectionResult:
     Returns:
         CourtDetectionResult with homography if successful.
     """
+    h, w = frame.shape[:2]
+
     # Step 1: Detect lines
     lines = detect_court_lines(frame)
+    if not lines:
+        return CourtDetectionResult(success=False, num_lines_detected=0)
+
+    # Step 1b: Filter out lines in scoreboard/overlay margins
+    lines = _filter_margin_lines(lines, frame_height=h)
     if not lines:
         return CourtDetectionResult(success=False, num_lines_detected=0)
 
@@ -385,14 +605,20 @@ def detect_court(frame: np.ndarray) -> CourtDetectionResult:
     if len(horizontal) < 2 or len(vertical) < 2:
         return CourtDetectionResult(success=False, num_lines_detected=len(lines))
 
+    # Step 2b: Cluster similar lines to reduce noise
+    horizontal = cluster_lines(horizontal, rho_threshold=20.0, theta_threshold=10.0)
+    vertical = cluster_lines(vertical, rho_threshold=20.0, theta_threshold=10.0)
+
     # Step 3: Extract keypoints from intersections
-    h, w = frame.shape[:2]
     keypoints = extract_keypoints(horizontal, vertical, frame_width=w, frame_height=h)
     if len(keypoints) < 4:
         return CourtDetectionResult(success=False, num_lines_detected=len(lines))
 
-    # Step 4: Match pixel keypoints to court coordinates
-    match_result = match_keypoints_to_court(keypoints)
+    # Step 4: Select court quadrilateral from keypoints
+    match_result = _select_court_quad(keypoints, frame_width=w, frame_height=h)
+    if match_result is None:
+        # Fallback to legacy matching
+        match_result = match_keypoints_to_court(keypoints)
     if match_result is None:
         return CourtDetectionResult(
             success=False,
@@ -413,7 +639,7 @@ def detect_court(frame: np.ndarray) -> CourtDetectionResult:
 
     # Step 6: Validate reprojection error
     reproj_error = _compute_reprojection_error(pixel_pts, court_pts, H)
-    if reproj_error > 10.0:
+    if reproj_error > 5.0:
         return CourtDetectionResult(
             success=False,
             pixel_keypoints=keypoints,
