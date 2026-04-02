@@ -483,18 +483,25 @@ def _select_court_quad(
     keypoints: list[tuple[float, float]],
     frame_width: int,
     frame_height: int,
+    horizontal_lines: list[tuple[tuple[int, int], tuple[int, int]]] | None = None,
+    vertical_lines: list[tuple[tuple[int, int], tuple[int, int]]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    """Select the best quadrilateral of keypoints matching a perspective court.
+    """Select the best quadrilateral matching a perspective-projected court.
 
-    Instead of naive outermost-corner selection, finds the largest convex
-    quadrilateral among keypoints that is consistent with a perspective-
-    projected rectangle: ordered corners, positive area, and reasonable
-    aspect ratio.
+    Uses the detected horizontal and vertical lines directly: picks the
+    topmost (far baseline) and bottommost (near baseline) horizontal lines,
+    then intersects them with the leftmost and rightmost vertical lines to
+    form a trapezoid.  Validates perspective foreshortening (far side must
+    be narrower than near side).
+
+    Falls back to a keypoint-based approach when lines aren't provided.
 
     Args:
         keypoints: Candidate intersection points as (x, y).
         frame_width: Image width.
         frame_height: Image height.
+        horizontal_lines: Clustered horizontal lines (optional).
+        vertical_lines: Clustered vertical lines (optional).
 
     Returns:
         Tuple of (pixel_points, court_points) as (4, 2) arrays mapping to
@@ -503,74 +510,162 @@ def _select_court_quad(
     if len(keypoints) < 4:
         return None
 
+    # ── Line-based quad selection ──────────────────────────────────
+    if horizontal_lines and vertical_lines and len(horizontal_lines) >= 2 and len(vertical_lines) >= 2:
+        result = _select_quad_from_lines(
+            horizontal_lines, vertical_lines, frame_width, frame_height,
+        )
+        if result is not None:
+            return result
+
+    # ── Fallback: keypoint-based selection with perspective check ──
     pts = np.array(keypoints, dtype=np.float64)
 
-    # Use convex hull to find the outer boundary of keypoints
-    if len(pts) < 3:
+    # Sort by y to find near (bottom) and far (top) groups
+    sorted_by_y = pts[pts[:, 1].argsort()]
+    mid = len(sorted_by_y) // 2
+    far_pts = sorted_by_y[:mid]
+    near_pts = sorted_by_y[mid:]
+
+    far_sorted = far_pts[far_pts[:, 0].argsort()]
+    near_sorted = near_pts[near_pts[:, 0].argsort()]
+
+    tl = far_sorted[0]
+    tr = far_sorted[-1]
+    bl = near_sorted[0]
+    br = near_sorted[-1]
+
+    near_width = abs(br[0] - bl[0])
+    far_width = abs(tr[0] - tl[0])
+
+    if near_width < 1:
+        return None
+    # Perspective check: far must be narrower than near
+    if far_width / near_width > 0.85:
         return None
 
-    hull = cv2.convexHull(pts.astype(np.float32))
-    hull_pts = hull.squeeze()
-    if hull_pts.ndim != 2 or len(hull_pts) < 4:
-        # If hull has fewer than 4 points, use what we have
-        if len(hull_pts) < 4:
-            return None
-
-    # Approximate the hull with 4 points (a quadrilateral)
-    peri = cv2.arcLength(hull, closed=True)
-    # Try progressively looser approximation until we get 4 points
-    for eps_mult in [0.02, 0.04, 0.06, 0.08, 0.10, 0.15, 0.20]:
-        approx = cv2.approxPolyDP(hull, eps_mult * peri, closed=True)
-        if len(approx) == 4:
-            break
-    else:
-        # Fallback: if we can't get exactly 4, take the 4 hull points
-        # with maximum enclosed area
-        if len(hull_pts) >= 4:
-            approx = hull_pts[:4].reshape(-1, 1, 2)
-        else:
-            return None
-
-    quad = approx.squeeze().astype(np.float64)
-    if quad.shape != (4, 2):
-        return None
-
-    # Order the quad: top-left, top-right, bottom-right, bottom-left
-    # Sum of coords: smallest = top-left, largest = bottom-right
-    # Diff of coords: smallest = top-right, largest = bottom-left
-    s = quad.sum(axis=1)
-    d = np.diff(quad, axis=1).squeeze()
-
-    tl = quad[np.argmin(s)]  # far-left (top-left in image = far-left on court)
-    br = quad[np.argmax(s)]  # near-right (bottom-right in image)
-    tr = quad[np.argmin(d)]  # far-right (top-right in image)
-    bl = quad[np.argmax(d)]  # near-left (bottom-left in image)
-
-    # Validate: the quad should have reasonable area
-    # and the "near" side (bl-br) should be below the "far" side (tl-tr)
     near_y = (bl[1] + br[1]) / 2
     far_y = (tl[1] + tr[1]) / 2
     if near_y <= far_y:
-        return None  # inverted — not a valid perspective court
-
-    # Check minimum area (at least 5% of frame)
-    area = cv2.contourArea(np.array([tl, tr, br, bl], dtype=np.float32))
-    min_area = frame_width * frame_height * 0.05
-    if area < min_area:
         return None
 
-    # Map: bl=near-left, br=near-right, tr=far-right, tl=far-left
+    area = cv2.contourArea(np.array([tl, tr, br, bl], dtype=np.float32))
+    if area < frame_width * frame_height * 0.05:
+        return None
+
+    pixel_pts = np.array([bl, br, tr, tl], dtype=np.float64)
+    court_pts = np.array([
+        list(COURT_KEYPOINTS["baseline_near_left_singles"]),
+        list(COURT_KEYPOINTS["baseline_near_right_singles"]),
+        list(COURT_KEYPOINTS["baseline_far_right_singles"]),
+        list(COURT_KEYPOINTS["baseline_far_left_singles"]),
+    ], dtype=np.float64)
+
+    return pixel_pts, court_pts
+
+
+def _select_quad_from_lines(
+    horizontal_lines: list[tuple[tuple[int, int], tuple[int, int]]],
+    vertical_lines: list[tuple[tuple[int, int], tuple[int, int]]],
+    frame_width: int,
+    frame_height: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Build a court quadrilateral from the outermost horizontal/vertical lines.
+
+    Picks the topmost and bottommost horizontals (far/near baselines) and
+    tries all pairs of verticals to find the quad with the best perspective
+    ratio and largest area.
+
+    Returns:
+        (pixel_points, court_points) or None.
+    """
+    # Sort horizontals by midpoint y
+    h_sorted = sorted(
+        horizontal_lines,
+        key=lambda l: (l[0][1] + l[1][1]) / 2,
+    )
+    far_baseline = h_sorted[0]   # smallest y = top of image = far court
+    near_baseline = h_sorted[-1]  # largest y = bottom of image = near court
+
+    far_y_mid = (far_baseline[0][1] + far_baseline[1][1]) / 2
+    near_y_mid = (near_baseline[0][1] + near_baseline[1][1]) / 2
+
+    if near_y_mid - far_y_mid < frame_height * 0.2:
+        return None  # baselines too close
+
+    best_quad = None
+    best_score = -1.0
+
+    for i in range(len(vertical_lines)):
+        for j in range(i + 1, len(vertical_lines)):
+            v_left_cand = vertical_lines[i]
+            v_right_cand = vertical_lines[j]
+
+            # Determine which is left / right by midpoint x
+            mx_i = (v_left_cand[0][0] + v_left_cand[1][0]) / 2
+            mx_j = (v_right_cand[0][0] + v_right_cand[1][0]) / 2
+            if mx_i > mx_j:
+                v_left_cand, v_right_cand = v_right_cand, v_left_cand
+                mx_i, mx_j = mx_j, mx_i
+
+            # Intersect to get 4 corners
+            bl = find_line_intersection(near_baseline, v_left_cand)
+            br = find_line_intersection(near_baseline, v_right_cand)
+            tl = find_line_intersection(far_baseline, v_left_cand)
+            tr = find_line_intersection(far_baseline, v_right_cand)
+
+            if any(p is None for p in [bl, br, tl, tr]):
+                continue
+
+            # Bounds check (within frame with margin)
+            margin = 100
+            corners = [bl, br, tl, tr]
+            if any(
+                x < -margin or x > frame_width + margin
+                or y < -margin or y > frame_height + margin
+                for x, y in corners
+            ):
+                continue
+
+            near_width = br[0] - bl[0]
+            far_width = tr[0] - tl[0]
+
+            if near_width < frame_width * 0.2:
+                continue  # too narrow
+            if far_width < frame_width * 0.1:
+                continue
+
+            # Perspective constraint: far side must be narrower
+            ratio = far_width / near_width
+            if ratio > 0.85 or ratio < 0.2:
+                continue
+
+            # Area
+            quad_arr = np.array([tl, tr, br, bl], dtype=np.float32)
+            area = cv2.contourArea(quad_arr)
+            if area < frame_width * frame_height * 0.05:
+                continue
+
+            # Score: prefer large area with a reasonable perspective ratio (0.4-0.7 typical)
+            # Penalty for extreme ratios
+            ratio_score = 1.0 - abs(ratio - 0.55) / 0.55
+            score = area * max(ratio_score, 0.1)
+
+            if score > best_score:
+                best_score = score
+                best_quad = (bl, br, tr, tl)
+
+    if best_quad is None:
+        return None
+
+    bl, br, tr, tl = best_quad
     pixel_pts = np.array([bl, br, tr, tl], dtype=np.float64)
 
     court_pts = np.array([
-        [COURT_KEYPOINTS["baseline_near_left_singles"][0],
-         COURT_KEYPOINTS["baseline_near_left_singles"][1]],
-        [COURT_KEYPOINTS["baseline_near_right_singles"][0],
-         COURT_KEYPOINTS["baseline_near_right_singles"][1]],
-        [COURT_KEYPOINTS["baseline_far_right_singles"][0],
-         COURT_KEYPOINTS["baseline_far_right_singles"][1]],
-        [COURT_KEYPOINTS["baseline_far_left_singles"][0],
-         COURT_KEYPOINTS["baseline_far_left_singles"][1]],
+        list(COURT_KEYPOINTS["baseline_near_left_singles"]),
+        list(COURT_KEYPOINTS["baseline_near_right_singles"]),
+        list(COURT_KEYPOINTS["baseline_far_right_singles"]),
+        list(COURT_KEYPOINTS["baseline_far_left_singles"]),
     ], dtype=np.float64)
 
     return pixel_pts, court_pts
@@ -615,7 +710,10 @@ def detect_court(frame: np.ndarray) -> CourtDetectionResult:
         return CourtDetectionResult(success=False, num_lines_detected=len(lines))
 
     # Step 4: Select court quadrilateral from keypoints
-    match_result = _select_court_quad(keypoints, frame_width=w, frame_height=h)
+    match_result = _select_court_quad(
+        keypoints, frame_width=w, frame_height=h,
+        horizontal_lines=horizontal, vertical_lines=vertical,
+    )
     if match_result is None:
         # Fallback to legacy matching
         match_result = match_keypoints_to_court(keypoints)

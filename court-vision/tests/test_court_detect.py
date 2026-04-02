@@ -141,19 +141,28 @@ class TestFilterMarginLines:
 
 
 class TestSelectCourtQuad:
-    def test_selects_quad_from_court_keypoints(self):
-        """Finds a valid quadrilateral from typical court intersection points."""
+    def test_selects_quad_from_lines(self):
+        """Finds a valid quadrilateral using horizontal and vertical lines."""
         from court_vision.court_detect import _select_court_quad
 
-        # Simulate a perspective-projected court: trapezoid wider at bottom
+        # Simulate a perspective court: trapezoid wider at bottom
         keypoints = [
-            (200.0, 650.0),   # near-left (bottom-left)
-            (1080.0, 650.0),  # near-right (bottom-right)
-            (880.0, 150.0),   # far-right (top-right)
-            (400.0, 150.0),   # far-left (top-left)
-            (640.0, 400.0),   # center point (interior)
+            (200.0, 650.0), (1080.0, 650.0),
+            (880.0, 150.0), (400.0, 150.0),
+            (640.0, 400.0),
         ]
-        result = _select_court_quad(keypoints, frame_width=1280, frame_height=720)
+        horizontal = [
+            ((200, 650), (1080, 650)),  # near baseline
+            ((400, 150), (880, 150)),   # far baseline
+        ]
+        vertical = [
+            ((200, 650), (400, 150)),   # left sideline
+            ((1080, 650), (880, 150)),  # right sideline
+        ]
+        result = _select_court_quad(
+            keypoints, frame_width=1280, frame_height=720,
+            horizontal_lines=horizontal, vertical_lines=vertical,
+        )
         assert result is not None
         pixel_pts, court_pts = result
         assert pixel_pts.shape == (4, 2)
@@ -167,19 +176,58 @@ class TestSelectCourtQuad:
                                      frame_width=1280, frame_height=720)
         assert result is None
 
-    def test_rejects_tiny_quad(self):
-        """Rejects a quadrilateral that is too small (less than 5% of frame)."""
+    def test_rejects_no_perspective_quad(self):
+        """Rejects a quadrilateral where far side is nearly as wide as near."""
         from court_vision.court_detect import _select_court_quad
 
-        # 4 points forming a tiny quad
+        # Rectangle (no perspective foreshortening) — ratio ~1.0
         keypoints = [
-            (600.0, 400.0),
-            (620.0, 400.0),
-            (620.0, 420.0),
-            (600.0, 420.0),
+            (200.0, 650.0), (1080.0, 650.0),
+            (200.0, 150.0), (1080.0, 150.0),
+            (640.0, 400.0),
         ]
-        result = _select_court_quad(keypoints, frame_width=1280, frame_height=720)
+        horizontal = [
+            ((200, 650), (1080, 650)),
+            ((200, 150), (1080, 150)),
+        ]
+        vertical = [
+            ((200, 150), (200, 650)),
+            ((1080, 150), (1080, 650)),
+        ]
+        result = _select_court_quad(
+            keypoints, frame_width=1280, frame_height=720,
+            horizontal_lines=horizontal, vertical_lines=vertical,
+        )
+        # Should be rejected: far/near ≈ 1.0 (no perspective)
         assert result is None
+
+    def test_selects_best_vertical_pair(self):
+        """With noise verticals that violate perspective, picks valid pair."""
+        from court_vision.court_detect import _select_court_quad
+
+        # 2 good verticals + 1 noise vertical far right (creates ratio > 0.85)
+        keypoints = [
+            (200.0, 650.0), (1000.0, 650.0), (1150.0, 650.0),
+            (400.0, 150.0), (850.0, 150.0), (1120.0, 150.0),
+            (640.0, 400.0),
+        ]
+        horizontal = [
+            ((100, 650), (1300, 650)),  # near baseline
+            ((300, 150), (1200, 150)),  # far baseline
+        ]
+        vertical = [
+            ((200, 650), (400, 150)),    # left sideline (good)
+            ((1000, 650), (850, 150)),   # right sideline (good, ratio 0.56)
+            ((1150, 650), (1120, 150)),  # noise vertical (with left: ratio 0.76, still ok
+                                          # but good pair has better ratio score)
+        ]
+        result = _select_court_quad(
+            keypoints, frame_width=1280, frame_height=720,
+            horizontal_lines=horizontal, vertical_lines=vertical,
+        )
+        assert result is not None
+        pixel_pts, _ = result
+        assert pixel_pts.shape == (4, 2)
 
 
 class TestDetectCourtLines:
