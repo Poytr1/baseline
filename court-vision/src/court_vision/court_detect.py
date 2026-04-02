@@ -649,7 +649,15 @@ def _select_quad_from_lines(
             # Score: prefer large area with a reasonable perspective ratio (0.4-0.7 typical)
             # Penalty for extreme ratios
             ratio_score = 1.0 - abs(ratio - 0.55) / 0.55
-            score = area * max(ratio_score, 0.1)
+
+            # Symmetry: prefer quads centered on the frame
+            near_cx = (bl[0] + br[0]) / 2
+            far_cx = (tl[0] + tr[0]) / 2
+            frame_cx = frame_width / 2
+            sym_offset = (abs(near_cx - frame_cx) + abs(far_cx - frame_cx)) / 2
+            sym_score = max(1.0 - sym_offset / (frame_width * 0.2), 0.1)
+
+            score = area * max(ratio_score, 0.1) * sym_score
 
             if score > best_score:
                 best_score = score
@@ -671,11 +679,182 @@ def _select_quad_from_lines(
     return pixel_pts, court_pts
 
 
+# Known court lines in court-space for interior matching.
+# Each entry: (name, orientation, coordinate).
+# For horizontal lines: coordinate = y-value in court meters.
+# For vertical lines: coordinate = x-value in court meters.
+_KNOWN_HORIZONTAL_LINES = [
+    ("baseline_far", _BASELINE_DIST),        # y = 11.885
+    ("service_far", _SERVICE_LINE_DIST),      # y = 6.4
+    ("net", 0.0),                             # y = 0.0
+    ("service_near", -_SERVICE_LINE_DIST),    # y = -6.4
+    ("baseline_near", -_BASELINE_DIST),       # y = -11.885
+]
+
+_KNOWN_VERTICAL_LINES = [
+    ("doubles_left", -_DOUBLES_WIDTH_HALF),   # x = -5.485
+    ("singles_left", -_SINGLES_WIDTH_HALF),   # x = -4.115
+    ("center", 0.0),                          # x = 0.0
+    ("singles_right", _SINGLES_WIDTH_HALF),   # x = 4.115
+    ("doubles_right", _DOUBLES_WIDTH_HALF),   # x = 5.485
+]
+
+
+def _refine_with_interior_lines(
+    pixel_pts: np.ndarray,
+    court_pts: np.ndarray,
+    H_initial: np.ndarray,
+    horizontal_lines: list[tuple[tuple[int, int], tuple[int, int]]],
+    vertical_lines: list[tuple[tuple[int, int], tuple[int, int]]],
+    frame_width: int,
+    frame_height: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Add interior line correspondences to improve homography accuracy.
+
+    Projects each detected line's midpoint to court space via the initial
+    homography, then snaps it to the nearest known court line.  Matched
+    lines contribute their intersection points with other matched lines as
+    additional pixel ↔ court correspondences.
+
+    Args:
+        pixel_pts:  Initial (N, 2) pixel correspondences.
+        court_pts:  Initial (N, 2) court correspondences.
+        H_initial:  Initial 3×3 homography (pixel → court).
+        horizontal_lines:  Detected horizontal lines.
+        vertical_lines:    Detected vertical lines.
+        frame_width:  Image width.
+        frame_height: Image height.
+
+    Returns:
+        Augmented (pixel_pts, court_pts) arrays with interior matches added.
+    """
+    match_threshold = 2.0  # meters — max snap distance
+
+    # ── Match each horizontal line to a known court horizontal ──
+    matched_h: list[tuple[tuple[tuple[int, int], tuple[int, int]], float]] = []
+    for line in horizontal_lines:
+        mx = (line[0][0] + line[1][0]) / 2
+        my = (line[0][1] + line[1][1]) / 2
+        court_xy = pixel_to_court(np.array([mx, my]), H_initial)
+        # Horizontal line → match by court y-coordinate
+        best_dist = match_threshold
+        best_y = None
+        for _name, known_y in _KNOWN_HORIZONTAL_LINES:
+            dist = abs(court_xy[1] - known_y)
+            if dist < best_dist:
+                best_dist = dist
+                best_y = known_y
+        if best_y is not None:
+            matched_h.append((line, best_y))
+
+    # ── Match each vertical line to a known court vertical ──
+    matched_v: list[tuple[tuple[tuple[int, int], tuple[int, int]], float]] = []
+    for line in vertical_lines:
+        mx = (line[0][0] + line[1][0]) / 2
+        my = (line[0][1] + line[1][1]) / 2
+        court_xy = pixel_to_court(np.array([mx, my]), H_initial)
+        # Vertical line → match by court x-coordinate
+        best_dist = match_threshold
+        best_x = None
+        for _name, known_x in _KNOWN_VERTICAL_LINES:
+            dist = abs(court_xy[0] - known_x)
+            if dist < best_dist:
+                best_dist = dist
+                best_x = known_x
+        if best_x is not None:
+            matched_v.append((line, best_x))
+
+    # ── Generate interior intersection correspondences ──
+    extra_pixel = []
+    extra_court = []
+
+    for h_line, court_y in matched_h:
+        for v_line, court_x in matched_v:
+            pt = find_line_intersection(h_line, v_line)
+            if pt is None:
+                continue
+            px_x, px_y = pt
+            # Skip points far outside the frame
+            if px_x < -50 or px_x > frame_width + 50:
+                continue
+            if px_y < -50 or px_y > frame_height + 50:
+                continue
+            extra_pixel.append([px_x, px_y])
+            extra_court.append([court_x, court_y])
+
+    if not extra_pixel:
+        return pixel_pts, court_pts
+
+    all_pixel = np.vstack([pixel_pts, np.array(extra_pixel, dtype=np.float64)])
+    all_court = np.vstack([court_pts, np.array(extra_court, dtype=np.float64)])
+
+    return all_pixel, all_court
+
+
+def detect_court_neural(
+    frame: np.ndarray,
+    weights_path: str | None = None,
+    min_keypoints: int = 4,
+) -> CourtDetectionResult:
+    """Detect court using neural keypoint prediction.
+
+    Uses a pretrained TrackNet-style CNN to predict 14 court keypoints,
+    then computes a homography from keypoints with valid detections.
+
+    Args:
+        frame: BGR image.
+        weights_path: Optional path to model weights.
+        min_keypoints: Minimum detected keypoints for a valid result.
+
+    Returns:
+        CourtDetectionResult with homography if enough keypoints found.
+    """
+    from court_vision.court_keypoint_net import (
+        KEYPOINT_COURT_COORDS,
+        detect_keypoints,
+    )
+
+    points = detect_keypoints(frame, weights_path=weights_path)
+
+    # Collect valid detections
+    pixel_pts = []
+    court_pts = []
+    for i, (x, y) in enumerate(points):
+        if x is not None and y is not None:
+            pixel_pts.append((x, y))
+            court_pts.append(KEYPOINT_COURT_COORDS[i])
+
+    if len(pixel_pts) < min_keypoints:
+        return CourtDetectionResult(
+            success=False,
+            num_lines_detected=0,
+        )
+
+    pixel_arr = np.array(pixel_pts, dtype=np.float64)
+    court_arr = np.array(court_pts, dtype=np.float64)
+
+    H = compute_homography(pixel_arr, court_arr)
+    if H is None:
+        return CourtDetectionResult(success=False, num_lines_detected=0)
+
+    # Validate with reprojection error
+    reproj_error = _compute_reprojection_error(pixel_arr, court_arr, H)
+    if reproj_error > 5.0:
+        return CourtDetectionResult(success=False, num_lines_detected=0)
+
+    return CourtDetectionResult(
+        success=True,
+        homography=H,
+        pixel_keypoints=[(float(x), float(y)) for x, y in pixel_pts],
+        num_lines_detected=len(pixel_pts),
+    )
+
+
 def detect_court(frame: np.ndarray) -> CourtDetectionResult:
     """Detect the tennis court in a frame and compute the homography.
 
-    Full pipeline: detect lines -> filter margins -> classify -> cluster ->
-    extract keypoints -> select court quad -> compute homography.
+    Tries neural keypoint detection first, falls back to classical
+    Hough-line pipeline if neural detection fails or weights unavailable.
 
     Args:
         frame: BGR image as numpy array (H, W, 3).
@@ -683,6 +862,13 @@ def detect_court(frame: np.ndarray) -> CourtDetectionResult:
     Returns:
         CourtDetectionResult with homography if successful.
     """
+    # Try neural detection first
+    try:
+        result = detect_court_neural(frame)
+        if result.success:
+            return result
+    except Exception:
+        pass  # Fall through to classical pipeline
     h, w = frame.shape[:2]
 
     # Step 1: Detect lines
@@ -726,7 +912,7 @@ def detect_court(frame: np.ndarray) -> CourtDetectionResult:
 
     pixel_pts, court_pts = match_result
 
-    # Step 5: Compute homography
+    # Step 5: Compute initial homography
     H = compute_homography(pixel_pts, court_pts)
     if H is None:
         return CourtDetectionResult(
@@ -734,6 +920,17 @@ def detect_court(frame: np.ndarray) -> CourtDetectionResult:
             pixel_keypoints=keypoints,
             num_lines_detected=len(lines),
         )
+
+    # Step 5b: Refine with interior line correspondences
+    refined_pixel, refined_court = _refine_with_interior_lines(
+        pixel_pts, court_pts, H, horizontal, vertical, w, h,
+    )
+    if len(refined_pixel) > len(pixel_pts):
+        H_refined = compute_homography(refined_pixel, refined_court)
+        if H_refined is not None:
+            H = H_refined
+            pixel_pts = refined_pixel
+            court_pts = refined_court
 
     # Step 6: Validate reprojection error
     reproj_error = _compute_reprojection_error(pixel_pts, court_pts, H)

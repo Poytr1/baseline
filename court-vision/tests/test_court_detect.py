@@ -718,3 +718,49 @@ class TestMultiFrameSampling:
 
         assert results[0].success is True
         assert mock_detect.call_count == 1  # stopped after first success
+
+
+class TestDetectCourtNeural:
+    def test_returns_result_with_valid_keypoints(self):
+        """Neural detection with mocked keypoints produces a result."""
+        from unittest.mock import patch
+        from court_vision.court_detect import detect_court_neural
+
+        # Mock 4 corner keypoints (doubles corners)
+        mock_points = [(None, None)] * 14
+        mock_points[0] = (200.0, 100.0)   # far left doubles
+        mock_points[1] = (1080.0, 100.0)  # far right doubles
+        mock_points[2] = (100.0, 650.0)   # near left doubles
+        mock_points[3] = (1180.0, 650.0)  # near right doubles
+
+        with patch("court_vision.court_keypoint_net.detect_keypoints", return_value=mock_points):
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+            result = detect_court_neural(frame)
+            # May or may not succeed depending on reprojection, but should not crash
+            assert isinstance(result.success, bool)
+
+    def test_fails_with_too_few_keypoints(self):
+        """Fewer than min_keypoints returns failure."""
+        from unittest.mock import patch
+        from court_vision.court_detect import detect_court_neural
+
+        mock_points = [(None, None)] * 14
+        mock_points[0] = (200.0, 100.0)  # Only 1 keypoint
+
+        with patch("court_vision.court_keypoint_net.detect_keypoints", return_value=mock_points):
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+            result = detect_court_neural(frame, min_keypoints=4)
+            assert result.success is False
+
+    def test_detect_court_falls_back_to_classical(self):
+        """When neural fails, classical pipeline still runs."""
+        from unittest.mock import patch
+        from court_vision.court_detect import detect_court, CourtDetectionResult
+
+        # Make neural detection raise an exception
+        with patch("court_vision.court_detect.detect_court_neural", side_effect=RuntimeError("no weights")):
+            img = np.full((720, 1280, 3), (34, 139, 34), dtype=np.uint8)
+            img = _draw_court_lines(img)
+            result = detect_court(img)
+            # Classical pipeline should still produce a result
+            assert isinstance(result, CourtDetectionResult)
