@@ -424,16 +424,16 @@ def match_keypoints_to_court(
 
     pixel_pts = np.array([near_left, near_right, far_right, far_left], dtype=np.float64)
 
-    # Map to singles court corners
+    # Map to doubles court corners (outermost lines visible in broadcast)
     court_pts = np.array([
-        [COURT_KEYPOINTS["baseline_near_left_singles"][0],
-         COURT_KEYPOINTS["baseline_near_left_singles"][1]],
-        [COURT_KEYPOINTS["baseline_near_right_singles"][0],
-         COURT_KEYPOINTS["baseline_near_right_singles"][1]],
-        [COURT_KEYPOINTS["baseline_far_right_singles"][0],
-         COURT_KEYPOINTS["baseline_far_right_singles"][1]],
-        [COURT_KEYPOINTS["baseline_far_left_singles"][0],
-         COURT_KEYPOINTS["baseline_far_left_singles"][1]],
+        [COURT_KEYPOINTS["baseline_near_left_doubles"][0],
+         COURT_KEYPOINTS["baseline_near_left_doubles"][1]],
+        [COURT_KEYPOINTS["baseline_near_right_doubles"][0],
+         COURT_KEYPOINTS["baseline_near_right_doubles"][1]],
+        [COURT_KEYPOINTS["baseline_far_right_doubles"][0],
+         COURT_KEYPOINTS["baseline_far_right_doubles"][1]],
+        [COURT_KEYPOINTS["baseline_far_left_doubles"][0],
+         COURT_KEYPOINTS["baseline_far_left_doubles"][1]],
     ], dtype=np.float64)
 
     return pixel_pts, court_pts
@@ -555,10 +555,10 @@ def _select_court_quad(
 
     pixel_pts = np.array([bl, br, tr, tl], dtype=np.float64)
     court_pts = np.array([
-        list(COURT_KEYPOINTS["baseline_near_left_singles"]),
-        list(COURT_KEYPOINTS["baseline_near_right_singles"]),
-        list(COURT_KEYPOINTS["baseline_far_right_singles"]),
-        list(COURT_KEYPOINTS["baseline_far_left_singles"]),
+        list(COURT_KEYPOINTS["baseline_near_left_doubles"]),
+        list(COURT_KEYPOINTS["baseline_near_right_doubles"]),
+        list(COURT_KEYPOINTS["baseline_far_right_doubles"]),
+        list(COURT_KEYPOINTS["baseline_far_left_doubles"]),
     ], dtype=np.float64)
 
     return pixel_pts, court_pts
@@ -662,10 +662,10 @@ def _select_quad_from_lines(
     pixel_pts = np.array([bl, br, tr, tl], dtype=np.float64)
 
     court_pts = np.array([
-        list(COURT_KEYPOINTS["baseline_near_left_singles"]),
-        list(COURT_KEYPOINTS["baseline_near_right_singles"]),
-        list(COURT_KEYPOINTS["baseline_far_right_singles"]),
-        list(COURT_KEYPOINTS["baseline_far_left_singles"]),
+        list(COURT_KEYPOINTS["baseline_near_left_doubles"]),
+        list(COURT_KEYPOINTS["baseline_near_right_doubles"]),
+        list(COURT_KEYPOINTS["baseline_far_right_doubles"]),
+        list(COURT_KEYPOINTS["baseline_far_left_doubles"]),
     ], dtype=np.float64)
 
     return pixel_pts, court_pts
