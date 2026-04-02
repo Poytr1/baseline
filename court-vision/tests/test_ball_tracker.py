@@ -403,6 +403,40 @@ class TestSmoothTrajectory:
             assert sm.confidence == orig.confidence
 
 
+class TestBuildTrajectorySmoothing:
+    def test_build_trajectory_applies_smoothing(self, tmp_path):
+        """build_trajectory applies smoothing after interpolation."""
+        from court_vision.ball_tracker import build_trajectory
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        for i in range(5):
+            img = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
+
+        # Create noisy detections (y oscillates ±12 around 200)
+        noisy_dets = [
+            BallDetection(frame_index=0, x=100.0, y=212.0, confidence=0.9),
+            BallDetection(frame_index=1, x=110.0, y=188.0, confidence=0.9),
+            BallDetection(frame_index=2, x=120.0, y=212.0, confidence=0.9),
+            BallDetection(frame_index=3, x=130.0, y=188.0, confidence=0.9),
+            BallDetection(frame_index=4, x=140.0, y=212.0, confidence=0.9),
+        ]
+
+        def mock_detect(frames, frame_index, **kwargs):
+            for d in noisy_dets:
+                if d.frame_index == frame_index:
+                    return d
+            return None
+
+        with patch("court_vision.ball_tracker.detect_ball_tracknet", side_effect=mock_detect):
+            traj = build_trajectory(frames_dir, 0, 4, fps=30.0, method="tracknet")
+
+        # Smoothing should reduce y-variation
+        ys = [d.y for d in traj.detections]
+        assert np.std(ys) < 10.0  # raw std is 10.0, smoothed should be less
+
+
 class TestBuildTrajectoryMethod:
     def test_hsv_method_uses_detect_ball_in_frame(self, tmp_path):
         """method='hsv' calls detect_ball_in_frame per frame."""

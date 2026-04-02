@@ -191,8 +191,9 @@ def build_trajectory(
                 raw_detections.append(det)
 
     interpolated = interpolate_gaps(raw_detections, fps, max_gap_s)
+    smoothed = smooth_trajectory(interpolated, window=3)
 
-    return BallTrajectory(detections=interpolated, fps=fps)
+    return BallTrajectory(detections=smoothed, fps=fps)
 
 
 def interpolate_gaps(
