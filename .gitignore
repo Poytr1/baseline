@@ -54,8 +54,13 @@ next-env.d.ts
 
 # court-vision
 court-vision/models/
-court-vision/data/
-court-vision/output/
+court-vision/data
+court-vision/output
+court-vision/runs/
 court-vision/.venv/
-court-vision/__pycache__/
 court-vision/src/*.egg-info/
+court-vision/*.pt
+court-vision/*.mp4
+__pycache__/
+*.pyc
+.pytest_cache/
