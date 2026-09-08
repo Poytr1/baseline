@@ -20,8 +20,9 @@ def sample_config_path(tmp_path: Path) -> Path:
 pipeline:
   target_resolution: [1280, 720]
   fps_override: null
-  confidence_threshold: 0.7
-  max_interpolation_gap_s: 0.5
+  ball_confidence_threshold: 0.7
+  ball_max_gap_s: 0.5
+  contact_method: proximity
 
 output:
   directory: output/

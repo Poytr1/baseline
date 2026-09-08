@@ -1,0 +1,9 @@
+# Ball detector knobs: changes ball_confidence_threshold / frame step re-run
+# WASB (about 40 ms per frame); post-processing knobs are free.
+name: ball
+clips: [vienna7s, houston28s]
+params:
+  ball_confidence_threshold: [0.2, 0.3, 0.45]
+  ball_max_speed_px: [100, 150, 220]
+  ball_max_gap_s: [0.3, 0.5]
+max_runs: 12

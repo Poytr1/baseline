@@ -1,14 +1,12 @@
-"""Scene filter — classify video frames as gameplay or non-gameplay."""
+"""Scene filter types and gameplay segment grouping.
+
+Frame classification itself lives in heuristic_scene_filter.py (court colour +
+line signals); this module holds the shared result types and turns per-frame
+labels into contiguous gameplay segments.
+"""
 
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-
-import cv2
-import numpy as np
-import torch
-import torch.nn as nn
-from torchvision import models, transforms
 
 
 class SceneCategory(Enum):
@@ -17,16 +15,6 @@ class SceneCategory(Enum):
     REPLAY = "replay"
     CROWD = "crowd"
     TRANSITION = "transition"
-
-
-# Ordered list matching model output indices
-CATEGORY_ORDER = [
-    SceneCategory.GAMEPLAY,
-    SceneCategory.CLOSE_UP,
-    SceneCategory.REPLAY,
-    SceneCategory.CROWD,
-    SceneCategory.TRANSITION,
-]
 
 
 @dataclass
@@ -43,109 +31,6 @@ class GameplaySegment:
     start_time_s: float
     end_time_s: float
     frame_count: int
-
-
-# Standard ImageNet normalization applied to input frames
-_transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-
-
-def load_scene_model(
-    weights_path: Path | None,
-    device: torch.device,
-) -> nn.Module:
-    """Load a ResNet-18 model modified for 5-class scene classification.
-
-    Args:
-        weights_path: Path to fine-tuned weights. If None, loads ImageNet
-                      pre-trained weights (useful for initial testing before
-                      fine-tuning).
-        device: Torch device to load model onto.
-
-    Returns:
-        The model in eval mode on the specified device.
-    """
-    num_classes = len(CATEGORY_ORDER)
-
-    if weights_path is not None and weights_path.exists():
-        model = models.resnet18()
-        model.fc = nn.Linear(model.fc.in_features, num_classes)
-        model.load_state_dict(torch.load(weights_path, map_location=device))
-    else:
-        model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-        model.fc = nn.Linear(model.fc.in_features, num_classes)
-
-    model = model.to(device)
-    model.eval()
-    return model
-
-
-def classify_frame(
-    frame: np.ndarray,
-    model: nn.Module,
-    device: torch.device,
-    frame_index: int = 0,
-) -> SceneFilterResult:
-    """Classify a single frame into a scene category.
-
-    Args:
-        frame: BGR image as numpy array (H, W, 3).
-        model: Loaded scene classification model.
-        device: Torch device for inference.
-        frame_index: Index of this frame in the video sequence.
-
-    Returns:
-        SceneFilterResult with predicted category and confidence.
-    """
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    tensor = _transform(rgb).unsqueeze(0).to(device)
-
-    with torch.no_grad():
-        logits = model(tensor)
-        probs = torch.softmax(logits, dim=1)
-
-    confidence, predicted = torch.max(probs, dim=1)
-    category = CATEGORY_ORDER[predicted.item()]
-
-    return SceneFilterResult(
-        frame_index=frame_index,
-        category=category,
-        confidence=confidence.item(),
-    )
-
-
-def classify_frames(
-    frames_dir: Path,
-    total_frames: int,
-    model: nn.Module,
-    device: torch.device,
-) -> list[SceneFilterResult]:
-    """Classify all frames in a directory.
-
-    Args:
-        frames_dir: Directory containing frame_NNNNNN.jpg files.
-        total_frames: Number of frames to process.
-        model: Loaded scene classification model.
-        device: Torch device for inference.
-
-    Returns:
-        List of SceneFilterResult, one per frame.
-    """
-    results = []
-    for i in range(total_frames):
-        frame_path = frames_dir / f"frame_{i:06d}.jpg"
-        frame = cv2.imread(str(frame_path))
-        if frame is None:
-            continue
-
-        result = classify_frame(frame, model, device, frame_index=i)
-        results.append(result)
-
-    return results
 
 
 def filter_gameplay_segments(

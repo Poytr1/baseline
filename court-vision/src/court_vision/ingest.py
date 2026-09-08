@@ -1,11 +1,11 @@
 """Video ingestion — YouTube download and frame extraction."""
 
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 
 @dataclass
@@ -41,6 +41,9 @@ def download_video(url: str, output_dir: Path) -> Path:
         RuntimeError: If yt-dlp download fails.
     """
     output_path = output_dir / "video.mp4"
+    if output_path.exists():
+        return output_path
+
     result = subprocess.run(
         [
             "yt-dlp",
@@ -62,6 +65,7 @@ def extract_frames(
     video_path: Path,
     target_resolution: tuple[int, int] = (1280, 720),
     output_dir: Path | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> FrameSequence:
     """Extract frames from a video file, resizing to target resolution.
 
@@ -91,7 +95,19 @@ def extract_frames(
         output_dir = video_path.parent / "frames"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    existing = sorted(output_dir.glob("frame_*.jpg"))
+    if existing:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+        return FrameSequence(
+            frames_dir=output_dir,
+            fps=fps,
+            total_frames=len(existing),
+            resolution=target_resolution,
+        )
+
     frame_count = 0
+    total_est = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -100,6 +116,8 @@ def extract_frames(
         frame_path = output_dir / f"frame_{frame_count:06d}.jpg"
         cv2.imwrite(str(frame_path), resized)
         frame_count += 1
+        if progress_callback:
+            progress_callback(frame_count, total_est)
 
     cap.release()
 

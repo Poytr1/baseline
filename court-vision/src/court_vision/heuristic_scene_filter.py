@@ -1,5 +1,6 @@
 """Heuristic-based scene filter using court color and line detection."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,7 +15,11 @@ def _get_court_color_mask(hsv: np.ndarray) -> np.ndarray:
     """Create a binary mask of pixels matching tennis court colors."""
     green_mask = cv2.inRange(hsv, (35, 40, 40), (85, 255, 255))
     blue_mask = cv2.inRange(hsv, (90, 50, 40), (130, 255, 255))
-    clay_mask = cv2.inRange(hsv, (10, 100, 100), (25, 255, 255))
+    # Clay ranges: red clay (hue 0-10) and orange clay (hue 10-25).
+    # Lower saturation/value thresholds to handle broadcast lighting & shadows.
+    red_clay_mask = cv2.inRange(hsv, (0, 50, 50), (10, 255, 255))
+    orange_clay_mask = cv2.inRange(hsv, (10, 50, 50), (25, 255, 255))
+    clay_mask = cv2.bitwise_or(red_clay_mask, orange_clay_mask)
     return cv2.bitwise_or(green_mask, cv2.bitwise_or(blue_mask, clay_mask))
 
 
@@ -87,14 +92,34 @@ class HeuristicScores:
 def compute_gameplay_score(
     frame: np.ndarray,
     weights: HeuristicWeights | None = None,
+    min_court_color: float = 0.45,
 ) -> HeuristicScores:
-    """Compute composite gameplay likelihood score for a single frame."""
+    """Compute composite gameplay likelihood score for a single frame.
+
+    Args:
+        frame: BGR image.
+        weights: Signal weights for composite score.
+        min_court_color: Minimum court color ratio required. Frames below
+            this are classified as non-gameplay regardless of other signals
+            (prevents false positives from line detection on close-ups).
+    """
     if weights is None:
         weights = HeuristicWeights()
 
     color_ratio = compute_court_color_ratio(frame)
     line_score = compute_line_score(frame)
     spatial_score = compute_court_spatial_score(frame)
+
+    # Gate: if court color is too low, this cannot be a gameplay frame.
+    # Line detection produces false positives on close-ups and transitions
+    # where bright edges are detected as "court lines".
+    if color_ratio < min_court_color:
+        return HeuristicScores(
+            court_color_ratio=color_ratio,
+            line_score=line_score,
+            spatial_score=spatial_score,
+            composite=color_ratio,
+        )
 
     color_score = min(color_ratio / 0.40, 1.0)
 
@@ -140,13 +165,17 @@ def classify_frames_heuristic(
     total_frames: int,
     gameplay_threshold: float = 0.45,
     weights: HeuristicWeights | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    stride: int = 1,
 ) -> list[SceneFilterResult]:
     """Classify all frames in a directory using heuristics.
 
     Drop-in replacement for scene_filter.classify_frames().
+    When stride > 1, only every Nth frame is classified and
+    intermediate frames inherit the nearest sampled label.
     """
-    results: list[SceneFilterResult] = []
-    for i in range(total_frames):
+    sampled: dict[int, SceneFilterResult] = {}
+    for i in range(0, total_frames, stride):
         frame_path = frames_dir / f"frame_{i:06d}.jpg"
         frame = cv2.imread(str(frame_path))
         if frame is None:
@@ -155,7 +184,22 @@ def classify_frames_heuristic(
             frame, frame_index=i,
             gameplay_threshold=gameplay_threshold, weights=weights,
         )
-        results.append(result)
+        sampled[i] = result
+        if progress_callback:
+            progress_callback(min(i + stride, total_frames), total_frames)
+
+    # Fill all frames by propagating nearest sampled result
+    results: list[SceneFilterResult] = []
+    last_result: SceneFilterResult | None = None
+    for i in range(total_frames):
+        if i in sampled:
+            last_result = sampled[i]
+        if last_result is not None:
+            results.append(SceneFilterResult(
+                frame_index=i,
+                category=last_result.category,
+                confidence=last_result.confidence,
+            ))
     return results
 
 

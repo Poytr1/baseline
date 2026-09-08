@@ -1,0 +1,6 @@
+name: strokes
+clips: [vienna7s, houston28s]
+params:
+  slice_drop_ratio: [0.2, 0.3, 0.45]
+  slice_lookback_s: [0.2, 0.3, 0.45]
+  volley_max_court_y: [3.5, 4.5, 5.5]

@@ -46,6 +46,13 @@ class TestComputeCourtColorRatio:
         ratio = compute_court_color_ratio(frame)
         assert 0.3 < ratio < 0.7
 
+    def test_red_clay_court_has_high_ratio(self):
+        """Frame filled with red clay color has high ratio."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        frame[:] = (60, 80, 180)  # BGR reddish-orange clay
+        ratio = compute_court_color_ratio(frame)
+        assert ratio > 0.8
+
 
 class TestComputeLineScore:
     def test_frame_with_white_lines_scores_high(self):
