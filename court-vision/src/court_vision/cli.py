@@ -305,6 +305,23 @@ def research_leaderboard(
                    f"{r['clip']:11s} {r.get('tag') or ''} {r['overrides']}  {r['dir']}")
 
 
+@research_app.command("render")
+def research_render(
+    experiment_dir: Path = typer.Argument(help="Experiment directory (has tracking_data.json + match_data.json)."),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output mp4 (default: <experiment>/annotated.mp4)."),
+    registry: Optional[Path] = typer.Option(None, "--registry"),
+    start: Optional[int] = typer.Option(None, "--start", help="First frame."),
+    end: Optional[int] = typer.Option(None, "--end", help="Last frame."),
+    all_frames: bool = typer.Option(False, "--all-frames", help="Include non-gameplay frames."),
+) -> None:
+    """Render an annotated video (court, ball trail, players, strokes, point winners) from a finished experiment."""
+    from court_vision.research.render import render_experiment_video
+
+    out = render_experiment_video(experiment_dir, output=output, registry=registry, start_frame=start, end_frame=end,
+                                  gameplay_only=not all_frames)
+    typer.echo(f"annotated video: {out}")
+
+
 @research_app.command("apply-review")
 def research_apply_review(
     experiment_dir: Path = typer.Argument(help="Experiment directory containing review.json."),
