@@ -152,7 +152,6 @@ def run_app() -> None:
         # Point list
         for i, point in enumerate(match.points):
             min_conf = point_confidence(match, i)
-            color = STATUS_COLORS.get(point.review_status, "#999")
             conf_marker = " ⚠" if min_conf < CONFIDENCE_THRESHOLD else ""
             label = f"Point {point.point_number} [{point.review_status}]{conf_marker}"
             if st.button(label, key=f"point_{i}", use_container_width=True):

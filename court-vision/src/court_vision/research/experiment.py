@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 import yaml
 
-from court_vision.config import PipelineConfig, apply_overrides, load_config
+from court_vision.config import apply_overrides, load_config
 from court_vision.export import export_json
 from court_vision.research.clips import Clip, get_clip
 from court_vision.research.keyframes import contact_sheet, crop_around, render_keyframe
@@ -35,7 +35,7 @@ from court_vision.research.runner import RunArtifacts, StageCache, run_clip
 from court_vision.research.scorecard import Scorecard, score_run
 from court_vision.review_data import load_match_json
 from court_vision.serialize import tracking_list_to_json
-from court_vision.shot_classify import MatchData, point_winner
+from court_vision.shot_classify import MatchData
 
 DEFAULT_ROOT = Path("runs")
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from court_vision.ball_tracker import BallDetection
-from court_vision.config import PipelineConfig, PipelineSettings, load_config
+from court_vision.config import PipelineConfig, load_config
 from court_vision.court_detect import CourtDetectionResult, compute_segment_homographies
 from court_vision.ingest import (
     FrameSequence,

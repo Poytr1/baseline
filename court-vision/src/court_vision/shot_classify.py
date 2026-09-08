@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 
 import numpy as np
 
-from court_vision.ball_tracker import BallDetection, map_ball_to_court
+from court_vision.ball_tracker import map_ball_to_court
 from court_vision.config import PipelineSettings
 from court_vision.hit_detect import Hit, detect_hits
 from court_vision.player_detect import FrameTrackingResult, PlayerDetection, PoseKeypoints
@@ -211,16 +211,13 @@ def classify_stroke(
     if l_shoulder and r_shoulder:
         shoulder_y = (l_shoulder[1] + r_shoulder[1]) / 2
     r_wrist, l_wrist = _kp(kp, "right_wrist"), _kp(kp, "left_wrist")
-    dom = dominant_wrist(kp, hand)
     body_x = _body_center_x(kp)
 
     head_y = nose[1] if nose else shoulder_y
-    dom_high = dom is not None and head_y is not None and dom[1] < head_y
     both_high = (
         r_wrist is not None and l_wrist is not None and head_y is not None
         and r_wrist[1] < head_y and l_wrist[1] < head_y
     )
-    ball_high = ball_xy is not None and shoulder_y is not None and ball_xy[1] < shoulder_y
     ball_over_head = ball_xy is not None and head_y is not None and ball_xy[1] < head_y
     any_high = (r_wrist is not None and head_y is not None and r_wrist[1] < head_y) or \
                (l_wrist is not None and head_y is not None and l_wrist[1] < head_y)
@@ -289,7 +286,6 @@ def infer_handedness(
     Ties default to right.
     """
     votes = {"right": 0.0, "left": 0.0}
-    seen_serve = False
     for hit in hits:
         if hit.role != role:
             continue
@@ -316,7 +312,6 @@ def infer_handedness(
                 if abs(side) >= 0.35 * torso:  # otherwise the pose is too small to tell
                     mirror = -1.0 if role == "far_player" else 1.0
                     votes["right" if side * mirror > 0 else "left"] += 2.0
-                    seen_serve = True
             continue
         if hit.ball_xy == (0.0, 0.0):
             continue

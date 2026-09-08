@@ -22,7 +22,6 @@ import io
 import json
 import struct
 import urllib.request
-import zipfile
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -216,7 +215,6 @@ def fetch_ball_subset(
     rz = RemoteZip(BALL_ZIP_URL)
     manifest: list[dict] = []
     for game in games:
-        prefix = next((n for n in rz.entries if n.rstrip("/").endswith(f"/{game}") or n.rstrip("/").endswith(game)), None)
         members = [n for n in rz.entries if f"/{game}/" in n and not n.endswith("/")]
         clips = sorted({n.split(f"/{game}/")[1].split("/")[0] for n in members})
         if max_clips:
