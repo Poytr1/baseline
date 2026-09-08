@@ -17,12 +17,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from court_vision.ball_tracker import (
-    BallDetection,
-    build_trajectory,
-    reject_stationary_detections,
-    trim_weak_edges,
-)
+from court_vision.ball_tracker import BallDetection, build_trajectory
+from court_vision.trajectory import finalize_ball_by_frame  # noqa: F401  (re-exported)
 from court_vision.scene_filter import GameplaySegment
 
 COCO_KEYPOINT_NAMES = [
@@ -374,6 +370,7 @@ def build_ball_trajectory(
     stationary_std_px: float = 3.0,
     strong_confidence: float = 0.75,
     far_roi: tuple[int, int, int, int] | None = None,
+    homography: np.ndarray | None = None,
 ) -> dict[int, BallDetection | None]:
     """Build ball trajectory for a segment, returning a per-frame lookup."""
     trajectory = build_trajectory(
@@ -386,30 +383,12 @@ def build_ball_trajectory(
         max_gap_s=max_gap_s,
         smooth_window=smooth_window,
         far_roi=far_roi,
+        homography=homography,
     )
     return finalize_ball_by_frame(
         trajectory.detections, segment,
         stationary_std_px=stationary_std_px, strong_confidence=strong_confidence, fps=fps,
     )
-
-
-def finalize_ball_by_frame(
-    detections: list[BallDetection],
-    segment: GameplaySegment,
-    stationary_std_px: float = 3.0,
-    strong_confidence: float = 0.75,
-    fps: float = 30.0,
-) -> dict[int, BallDetection | None]:
-    """Stationary rejection + edge trimming, returning a per-frame lookup."""
-    raw_dets: list[BallDetection | None] = [None] * (segment.end_frame - segment.start_frame + 1)
-    for det in detections:
-        idx = det.frame_index - segment.start_frame
-        if 0 <= idx < len(raw_dets):
-            raw_dets[idx] = det
-
-    filtered = reject_stationary_detections(raw_dets, std_threshold=stationary_std_px, fps=fps)
-    filtered = trim_weak_edges(filtered, strong_confidence=strong_confidence)
-    return {segment.start_frame + i: det for i, det in enumerate(filtered)}
 
 
 def detect_players_segment(

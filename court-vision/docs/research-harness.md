@@ -118,6 +118,7 @@ precision of our hit detector on an independent broadcast source.
 | `ball_detection_method` | `wasb` | WASB (HRNet) or TrackNet v2 heatmaps |
 | `ball_confidence_threshold` | 0.3 | heatmap peak threshold; outlier rejection cleans up the rest |
 | `ball_frame_step` | auto | 3-frame window spacing (2 at 60 fps) |
+| `ball_min_run_s` | 0.12 | a ball tracklet shorter than this must link (speed-consistently) to a longer one or is dropped; kills shoes, second balls and crowd blips |
 | `player_model` / `player_imgsz` | yolov8s-pose / 1280 | one YOLO-pose pass gives boxes + 17 keypoints; far court is also cropped and upscaled |
 | `contact_method` | trajectory | hits from ball direction change + player proximity + wrist-speed peaks, with an "away from hitter" test that rejects bounces |
 | `contact_min_gap_s` | 0.6 | minimum time between hits; same-player hits within 1.5 s collapse to the best-evidenced one |
@@ -132,21 +133,27 @@ precision of our hit detector on an independent broadcast source.
 
 Scorecards after the rework and the `contacts` sweep (`runs/leaderboard.jsonl`; shot tolerance ±0.5 s):
 
-| clip | points | winner | shots P / R / F1 | FH-BH side | serve P/R | slice P/R | ball coverage |
-|---|---|---|---|---|---|---|---|
-| houston28s (59.94 fps, 2 points, 13 shots) | 2/2 | 1/2† | 1.00 / 1.00 / 1.00 | 9/9 | 1.0 / 1.0 | 1.0 / 0.5 | 0.87 |
-| vienna7s (30 fps, 1 point, 5 shots) | 1/1 | unknown* | 1.00 / 1.00 / 1.00 | 3/3 | – | 0 / 0 | 0.93 |
+| clip | points | winner | shots P / R / F1 | FH-BH side | serve P/R | slice P/R | ball coverage (rally frames) | shots with speed |
+|---|---|---|---|---|---|---|---|---|
+| houston28s (59.94 fps, 2 points, 13 shots) | 2/2 | 2/2† | 1.00 / 1.00 / 1.00 | 9/9 | 1.0 / 1.0 | 1.0 / 0.5 | 0.75 | 13/13 |
+| vienna7s (30 fps, 1 point, 5 shots) | 1/1 | 1/1* | 1.00 / 1.00 / 1.00 | 3/3 | – | 0 / 0 | 0.92 | 5/5 |
 
-\* the 7 s clip ends with the ball still in flight after the last hit and the
-scoreboard never updates, so the pipeline reports `winner: null` /
-`outcome_source: unknown` rather than guessing.  
-† point 2 of the 28 s clip also ends before the bounce and before the score
-graphic updates (`unknown`). The full 134 s reel shows the graphic going from
+\* the 7 s clip ends before the scoreboard updates; the winner comes from the
+landing of the last shot (`outcome_source: trajectory`), which the bounce
+detector now finds in the last second of the clip. Before that it was
+reported as `unknown` rather than guessed.  
+† point 2 of the 28 s clip likewise ends before the score graphic updates and
+is decided from the landing. The full 134 s reel shows the graphic going from
 "AD Zhang" to "40-40", i.e. the near player (Shelton) won — the original
 human label said the far player; it was corrected through `research feedback`,
 as was a forehand/backhand label in vienna7s. Two label errors in 18 shots /
 3 points is the level of noise reviews have to expect. The two GT "slice" labels in
 vienna7s are forehand-side contacts the wrist-drop rule does not flag.
+
+On the unlabelled 134 s reel the same settings give 9 points / 47 shots with a
+speed on 38 of them; one far-player hit is timed at the apex of a high ball
+over the player instead of the contact a second later (an apex test on the
+reversal candidates rejected real contacts too and was dropped).
 
 Starting point before the rework (same GT): houston28s shot F1 0.69, stroke
 accuracy 0.30, side 4/7, winners 1/2; vienna7s F1 0.77, side 2/3.
@@ -187,3 +194,66 @@ two `unknown` points are 1–2 s fragments). Point 2 reproduces the corrected
 guard, the missed-return fill and the second label error were found — the
 packet under `runs/experiments/…houston134s…/REVIEW.md` is the starting
 point for labelling the reel.
+
+## Shot speed
+
+`Shot.speed_kmh` is the average speed from contact to the first bounce
+(`ball_speed.bounce_speed`): the hitter's feet at contact (court metres from
+the player box) to the landing spot found by `estimate_bounce`, divided by
+the flight time. Both endpoints are on the ground, so the homography is
+accurate there; an airborne ball projected through the ground plane is not
+(a ball 3 m up on the far side lands 20–40 m "behind" the baseline), which
+is why the flight is not integrated sample by sample and why the earlier
+launch-speed and net-crossing estimates were biased by 50–100 %.
+
+The bounce itself is found from that projection error: a ball landing on
+the far side has its projected depth run ahead while it rises, fall back
+as it descends and run ahead again after the bounce, so the depth rate
+jumps up at the bounce; a ball landing on the near side is pulled toward
+the net while airborne, so its depth rate drops there. `estimate_bounce`
+picks the kink with the sign expected for the landing side, falling back
+to a prominent depth minimum, and ignores the 2 m net band (stuck
+detections) and anything that would land behind the back fence.
+
+The value is a mean over the flight (drag makes it a few percent under
+launch speed, like broadcast graphics). The landing is the *first clear*
+kink — a local peak at least half as strong as the strongest one: the
+strongest kink is often a winner's second bounce (a 33 km/h forehand),
+while the first kink over a fixed threshold fires on noise (a 251 km/h
+serve). On the labelled clips every shot gets a speed: serves 105–146 km/h,
+groundstrokes 61–125 km/h, the one slice 72 km/h. It is left empty when no
+bounce is visible before the next hit. `research render` prints it with
+each stroke label and in the rally strip.
+
+## Trajectory cleaning
+
+Raw detections go through `trajectory.py` before anything uses them:
+
+1. court gate — an image-space polygon: the court widened by 9.5 m each
+   side and 6 m toward the camera, plus a *prism* over the far half of the
+   court (2.5 m each side, lifted 1.2x the far half's pixel height, so a
+   lob over the far court projects 40 m past the baseline on the ground
+   but still passes). The prism follows the court's perspective; a plain
+   box reaches into the crowd beside the far baseline;
+2. runs — a step faster than the speed cap or a gap over ~0.5 s starts a
+   new tracklet; a step *across* a gap must also stay within 4x the ball's
+   speed on either side of it (the cap averages over the gap, so a blip six
+   frames before the ball re-appears looked legal);
+3. blips — a run shorter than 1 s that moves less than 3 % of the frame
+   diagonal, or stands still for 40 % of its frames, is dropped: a ball
+   never hangs still, a spectator's head or a ball on the ground does, and
+   so does the detector hopping between heads;
+4. linking — tracklets shorter than `ball_min_run_s` survive only by
+   linking to a longer one with a bridge no faster than the cap and no
+   more than 5x the track's own speed (floor 3 px/frame); a run of fewer
+   than three detections may only bridge 0.25 s;
+5. gap interpolation (speed-consistent), smoothing over consecutive
+   frames, a 1 s stationary filter and weak-edge trimming.
+
+On the 134 s reel this took the short junk tracklets in the final output
+from 40 (crowd, ball kids, the bottom of the frame) to 4 isolated
+single-frame blips, and fixed three serve contact frames that had been
+pulled back to the toss by junk; the rendered trail also refuses to draw
+a line across an implausible jump. `ball cov` on the scorecard is
+measured on rally frames only (inside predicted points), so dropping a
+ball in a player's hand between points no longer costs coverage.

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import court_vision
-from court_vision.ball_tracker import BallDetection, postprocess_trajectory
+from court_vision.trajectory import BallDetection, finalize_ball_by_frame, postprocess_trajectory
 from court_vision.config import STAGE_DEPS, STAGE_PARAMS, PipelineConfig
 from court_vision.court_detect import CourtDetectionResult
 from court_vision.ingest import FrameSequence, extract_frames
@@ -27,7 +27,7 @@ from court_vision.pipeline import (
     stage_scoreboard,
     stage_shots,
 )
-from court_vision.player_detect import FrameTrackingResult, detect_players_segment, finalize_ball_by_frame
+from court_vision.player_detect import FrameTrackingResult, detect_players_segment
 from court_vision.research.clips import Clip
 from court_vision.scene_filter import GameplaySegment
 from court_vision.scoreboard import ScoreRow, ScoreSample, ScoreTimeline
@@ -49,7 +49,7 @@ STAGE_SOURCES: dict[str, tuple[str, ...]] = {
     "scene": ("scene_filter.py", "heuristic_scene_filter.py", "court_detect.py"),
     "court": ("court_detect.py", "court_keypoint_net.py"),
     "ball": ("ball_tracker.py", "wasb.py", "tracknet.py"),
-    "ball_post": ("ball_tracker.py",),
+    "ball_post": ("trajectory.py",),
     "players": ("player_detect.py",),
     "scoreboard": ("scoreboard.py",),
     "shots": ("shot_classify.py", "hit_detect.py"),
@@ -232,10 +232,13 @@ def run_clip(
     keys["ball_post"] = cache.key("ball_post", clip.name, config, keys) if cache else "nocache"
     p = config.pipeline
     ball: list[dict[int, BallDetection | None]] = []
-    for seg, raw in zip(segments, ball_raw):
+    for i, (seg, raw) in enumerate(zip(segments, ball_raw)):
+        H_seg = court[i].homography if (i < len(court) and court[i].success) else None
         traj = postprocess_trajectory(
             raw, frame_seq.fps, max_gap_s=p.ball_max_gap_s,
             max_speed_px=p.ball_max_speed_px, smooth_window=p.ball_smooth_window,
+            homography=H_seg, frame_shape=(frame_seq.resolution[1], frame_seq.resolution[0]),
+            min_run_s=p.ball_min_run_s,
         )
         ball.append(finalize_ball_by_frame(
             traj.detections, seg,

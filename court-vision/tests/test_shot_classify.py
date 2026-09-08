@@ -499,9 +499,11 @@ class TestEstimateBounce:
     """``estimate_bounce`` ignores the first 0.15 s after ``start`` (the hit
     itself), needs at least five samples, ignores the 2 m net band and reports
     the landing on the opponent's side of the net: the point where the ball
-    stops descending (in image space the ball is lowest on screen there; the
-    court projection of an airborne ball overshoots, so the projected depth is
-    at a local minimum there).
+    stops descending. The ground projection of an airborne ball is displaced
+    away from the camera, so on the far side the projected depth falls while
+    the ball descends and its rate jumps up at the bounce (a local minimum /
+    convex kink), while on the near side the depth rate drops at the bounce
+    (the ball is lowest on screen there).
 
     All trajectories below use ``H_LINEAR`` (court_y = -(py - 360) / 25) with
     the ball on the far side of the court (py < 310) unless stated otherwise.
@@ -582,11 +584,12 @@ class TestEstimateBounce:
     def test_hitter_role_restricts_to_the_opponent_side(self):
         far = self._by_frame(self.FLIGHT_AND_BOUNCE, first_frame=21)
         assert estimate_bounce(far, 16, 40, H_LINEAR, fps=30.0, hitter_role="far_player") is None
-        # the mirror image: same flight on the near side of the net (py > 410)
+        # the mirror image on the near side of the net (py > 410): the ball is
+        # lowest on screen at frame 26 (py 520), which is where it bounced
         near = self._by_frame([720 - y for y in self.FLIGHT_AND_BOUNCE], first_frame=21)
-        assert estimate_bounce(near, 16, 40, H_LINEAR, fps=30.0, hitter_role="far_player") == pytest.approx((0.0, -3.2))
+        assert estimate_bounce(near, 16, 40, H_LINEAR, fps=30.0, hitter_role="far_player") == pytest.approx((0.0, -6.4))
         assert estimate_bounce(near, 16, 40, H_LINEAR, fps=30.0, hitter_role="near_player") is None
-        assert estimate_bounce(near, 16, 40, H_LINEAR, fps=30.0) == pytest.approx((0.0, -3.2))
+        assert estimate_bounce(near, 16, 40, H_LINEAR, fps=30.0) == pytest.approx((0.0, -6.4))
 
     def test_net_band_is_ignored(self):
         ys = [332, 342, 352, 362, 372, 382, 392, 402, 392, 382, 372, 362, 352, 342, 332, 322]  # all within 2 m of the net

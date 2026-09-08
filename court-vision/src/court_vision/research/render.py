@@ -16,7 +16,6 @@ import tempfile
 from pathlib import Path
 
 import cv2
-import numpy as np
 import yaml
 
 from court_vision.court_detect import compute_segment_homographies
@@ -101,7 +100,11 @@ def render_experiment_video(
             y += _text(out, f"Point {point.point_number}   server: {server}   t={f / fps:5.1f}s", (12, y), 0.7)
             done = [s for s in point.shots if s.frame <= f]
             if done:
-                strip = "  ".join(f"{s.shot_number}.{_ROLE_SHORT[s.player][0].upper()} {s.stroke}" for s in done)
+                strip = "  ".join(
+                    f"{s.shot_number}.{_ROLE_SHORT[s.player][0].upper()} {s.stroke}"
+                    + (f" {s.speed_kmh:.0f}" if s.speed_kmh else "")
+                    for s in done
+                )
                 y += _text(out, strip, (12, y), 0.6, (255, 255, 0))
             # flash the current contact
             for s in point.shots:
@@ -112,7 +115,8 @@ def render_experiment_video(
                     if pl is not None:
                         x1, y1, x2, y2 = (int(v) for v in pl.bbox)
                         cv2.rectangle(out, (x1 - 4, y1 - 4), (x2 + 4, y2 + 4), color, 3)
-                        _text(out, f"{s.stroke.upper()} ({_ROLE_SHORT[s.player]})", (max(12, x1), max(30, y1 - 12)), 0.8, color)
+                        label = f"{s.stroke.upper()} ({_ROLE_SHORT[s.player]})" + (f"  {s.speed_kmh:.0f} km/h" if s.speed_kmh else "")
+                        _text(out, label, (max(12, x1), max(30, y1 - 12)), 0.8, color)
                     if t is not None and t.ball is not None:
                         cv2.circle(out, (int(t.ball.x), int(t.ball.y)), 18, color, 3)
             # winner banner after the last shot / at the end of the point

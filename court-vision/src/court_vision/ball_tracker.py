@@ -1,33 +1,34 @@
-"""Ball tracking — neural detection, trajectory building, and court coordinate mapping."""
+"""Ball detection — WASB / TrackNet inference over a frame range."""
 
 from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 
+# Post-processing lives in trajectory.py (own cache key); the names are
+# re-exported here because callers and tests historically found them here.
+from court_vision.trajectory import (  # noqa: F401
+    BallDetection,
+    BallTrajectory,
+    interpolate_gaps,
+    map_ball_to_court,
+    postprocess_trajectory,
+    reject_stationary_detections,
+    reject_velocity_outliers,
+    smooth_trajectory,
+    trim_weak_edges,
+)
 
-@dataclass
-class BallDetection:
-    """Single-frame ball detection result."""
-
-    frame_index: int
-    x: float
-    y: float
-    confidence: float
-    interpolated: bool = False
-
-
-@dataclass
-class BallTrajectory:
-    """Sequence of ball detections across frames."""
-
-    detections: list[BallDetection]
-    fps: float
+__all__ = [
+    "BallDetection", "BallTrajectory", "build_trajectory", "detect_ball_sequence",
+    "detect_ball_tracknet", "detect_ball_wasb", "far_ball_roi", "interpolate_gaps",
+    "map_ball_to_court", "postprocess_trajectory", "reject_stationary_detections",
+    "reject_velocity_outliers", "smooth_trajectory", "trim_weak_edges",
+]
 
 
 def detect_ball_tracknet(
@@ -184,24 +185,6 @@ def far_ball_roi(homography: np.ndarray | None, frame_shape: tuple[int, ...]) ->
     return (x1, y1, x2, y2)
 
 
-def postprocess_trajectory(
-    raw_detections: list[BallDetection],
-    fps: float,
-    max_gap_s: float = 0.5,
-    max_speed_px: float = 150.0,
-    smooth_window: int = 3,
-) -> BallTrajectory:
-    """Outlier rejection -> gap interpolation -> smoothing.
-
-    ``max_speed_px`` is per *30fps* frame and is scaled by the actual fps.
-    """
-    per_frame_speed = max_speed_px * 30.0 / max(fps, 1.0)
-    filtered = reject_velocity_outliers(raw_detections, fps, max_speed_px_per_frame=per_frame_speed)
-    interpolated = interpolate_gaps(filtered, fps, max_gap_s, max_speed_px_per_frame=per_frame_speed)
-    smoothed = smooth_trajectory(interpolated, window=smooth_window)
-    return BallTrajectory(detections=smoothed, fps=fps)
-
-
 def build_trajectory(
     frames_dir: Path,
     start_frame: int,
@@ -215,6 +198,9 @@ def build_trajectory(
     max_speed_px: float = 150.0,
     smooth_window: int = 3,
     far_roi: tuple[int, int, int, int] | None = None,
+    homography: np.ndarray | None = None,
+    min_run_s: float = 0.12,
+    frame_shape: tuple[int, ...] | None = None,
 ) -> BallTrajectory:
     """Detect the ball in every frame of a range and build a clean trajectory.
 
@@ -226,254 +212,8 @@ def build_trajectory(
         confidence_threshold=confidence_threshold, frame_step=frame_step,
         progress_callback=progress_callback, far_roi=far_roi,
     )
-    return postprocess_trajectory(raw, fps, max_gap_s=max_gap_s, max_speed_px=max_speed_px, smooth_window=smooth_window)
+    return postprocess_trajectory(raw, fps, max_gap_s=max_gap_s, max_speed_px=max_speed_px,
+                                  smooth_window=smooth_window, homography=homography, min_run_s=min_run_s,
+                                  frame_shape=frame_shape)
 
 
-def reject_velocity_outliers(
-    detections: list[BallDetection],
-    fps: float,
-    max_speed_px_per_frame: float = 150.0,
-    min_run: int = 3,
-) -> list[BallDetection]:
-    """Reject detections that imply physically impossible ball movement.
-
-    Consecutive detections are grouped into *runs* where each step is
-    within ``max_speed_px_per_frame`` (scaled by the frame gap); a step
-    faster than that starts a new run. Runs shorter than ``min_run``
-    detections are dropped: a real ball track is long, while a false peak
-    on a shoe, a logo or a ball kid's ball shows up as one or two frames
-    that do not connect to the track on either side.
-
-    Args:
-        detections: Sorted raw ball detections (no Nones).
-        fps: Video frame rate (unused; kept for API symmetry).
-        max_speed_px_per_frame: Maximum allowed displacement per frame in pixels.
-        min_run: Runs shorter than this are removed.
-
-    Returns:
-        Filtered list of detections with outliers removed.
-    """
-    n = len(detections)
-    if n < 2:
-        return list(detections)
-
-    def ok(a: BallDetection, b: BallDetection) -> bool:
-        gap = max(abs(b.frame_index - a.frame_index), 1)
-        dist = ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5
-        return dist <= max_speed_px_per_frame * gap
-
-    runs: list[list[BallDetection]] = [[detections[0]]]
-    for det in detections[1:]:
-        if ok(runs[-1][-1], det):
-            runs[-1].append(det)
-        else:
-            runs.append([det])
-
-    kept: list[BallDetection] = []
-    for run in runs:
-        if len(run) >= min_run:
-            kept.extend(run)
-    return kept
-
-
-def interpolate_gaps(
-    detections: list[BallDetection],
-    fps: float,
-    max_gap_s: float = 0.5,
-    max_speed_px_per_frame: float | None = None,
-) -> list[BallDetection]:
-    """Fill short gaps in ball detections with locally-fit interpolation.
-
-    For each gap, fits a quadratic polynomial to nearby anchor points
-    (up to 2 detections on each side of the gap). Falls back to linear
-    when fewer than 3 local anchors are available.
-    """
-    if len(detections) <= 1:
-        return list(detections)
-
-    max_gap_frames = int(max_gap_s * fps)
-    result: list[BallDetection] = [detections[0]]
-
-    for i in range(1, len(detections)):
-        prev = detections[i - 1]
-        curr = detections[i]
-        gap = curr.frame_index - prev.frame_index
-
-        implied_speed = ((curr.x - prev.x) ** 2 + (curr.y - prev.y) ** 2) ** 0.5 / max(gap, 1)
-        same_track = max_speed_px_per_frame is None or implied_speed <= max_speed_px_per_frame
-        if same_track and max_speed_px_per_frame is not None:
-            # The ball keeps roughly its speed through an occlusion; a gap that
-            # would have to be crossed much faster than the ball moves on
-            # either side joins two different objects.
-            def local_speed(a: BallDetection, b: BallDetection) -> float:
-                g = max(abs(b.frame_index - a.frame_index), 1)
-                return ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5 / g
-            before = local_speed(detections[i - 2], prev) if i >= 2 else None
-            after = local_speed(curr, detections[i + 1]) if i + 1 < len(detections) else None
-            refs = [v for v in (before, after) if v is not None]
-            if refs and implied_speed > 2.5 * max(min(refs), 2.0):
-                same_track = False
-        if 1 < gap <= max_gap_frames and same_track:
-            before = detections[max(0, i - 2):i]
-            after = detections[i:min(len(detections), i + 2)]
-            local_anchors = before + after
-
-            anchor_frames = np.array([d.frame_index for d in local_anchors], dtype=np.float64)
-            anchor_x = np.array([d.x for d in local_anchors], dtype=np.float64)
-            anchor_y = np.array([d.y for d in local_anchors], dtype=np.float64)
-
-            degree = min(2, len(local_anchors) - 1)
-            poly_x = np.polyfit(anchor_frames, anchor_x, degree)
-            poly_y = np.polyfit(anchor_frames, anchor_y, degree)
-
-            for j in range(1, gap):
-                frame_idx = prev.frame_index + j
-                interp_conf = min(prev.confidence, curr.confidence) * 0.5
-                result.append(BallDetection(
-                    frame_index=frame_idx,
-                    x=float(np.polyval(poly_x, frame_idx)),
-                    y=float(np.polyval(poly_y, frame_idx)),
-                    confidence=interp_conf,
-                    interpolated=True,
-                ))
-
-        result.append(curr)
-
-    return result
-
-
-def smooth_trajectory(
-    detections: list[BallDetection],
-    window: int = 3,
-) -> list[BallDetection]:
-    """Apply moving-average smoothing to ball positions.
-
-    Smooths x and y coordinates independently using a centered moving
-    average over *consecutive* frames only (a gap breaks the window so a
-    bounce or hit on one side of a gap never bleeds into the other).
-    """
-    if window <= 1 or len(detections) < window:
-        return list(detections)
-
-    half = window // 2
-    smoothed: list[BallDetection] = []
-
-    for i, det in enumerate(detections):
-        neighbors = [det]
-        for k in range(1, half + 1):
-            if i - k >= 0 and det.frame_index - detections[i - k].frame_index == k:
-                neighbors.append(detections[i - k])
-            if i + k < len(detections) and detections[i + k].frame_index - det.frame_index == k:
-                neighbors.append(detections[i + k])
-        avg_x = sum(d.x for d in neighbors) / len(neighbors)
-        avg_y = sum(d.y for d in neighbors) / len(neighbors)
-        smoothed.append(BallDetection(
-            frame_index=det.frame_index,
-            x=avg_x,
-            y=avg_y,
-            confidence=det.confidence,
-            interpolated=det.interpolated,
-        ))
-
-    return smoothed
-
-
-def reject_stationary_detections(
-    detections: list[BallDetection | None],
-    window: int = 5,
-    std_threshold: float = 5.0,
-    fps: float | None = None,
-    window_s: float = 1.0,
-    min_fill: float = 0.8,
-) -> list[BallDetection | None]:
-    """Reject ball detections that sit still (a ball on the ground, a logo).
-
-    A detection is dropped when the detections in a window around it have a
-    standard deviation below ``std_threshold`` in both x and y. With ``fps``
-    the window is ``window_s`` seconds long and must be at least ``min_fill``
-    populated: a ball in play never stays within a few pixels for a whole
-    second, but it does move only 1-3 px/frame at the far baseline or at the
-    top of its arc, so a short window would delete exactly the frames where
-    the far player hits it.
-    """
-    if fps:
-        window = max(window, int(window_s * fps))
-    if len(detections) < window:
-        return list(detections)
-
-    result: list[BallDetection | None] = list(detections)
-
-    non_none_positions = [(d.x, d.y) for d in detections if d is not None]
-    if len(non_none_positions) < window:
-        return result
-
-    xs = [p[0] for p in non_none_positions]
-    ys = [p[1] for p in non_none_positions]
-    if float(np.std(xs)) < std_threshold and float(np.std(ys)) < std_threshold:
-        return [None for _ in detections]
-
-    half = window // 2
-    min_count = max(3, int(min_fill * window)) if fps else 3
-    for i, det in enumerate(detections):
-        if det is None:
-            continue
-        start = max(0, i - half)
-        end = min(len(detections), i + half + 1)
-        nearby = [detections[j] for j in range(start, end) if detections[j] is not None]
-        if len(nearby) < min_count:
-            continue
-        local_xs = [d.x for d in nearby]
-        local_ys = [d.y for d in nearby]
-        if float(np.std(local_xs)) < std_threshold and float(np.std(local_ys)) < std_threshold:
-            result[i] = None
-
-    return result
-
-
-def trim_weak_edges(
-    detections: list[BallDetection | None],
-    strong_confidence: float = 0.75,
-) -> list[BallDetection | None]:
-    """Null out weak/interpolated detections before the first and after the
-    last *strong* detection of a segment.
-
-    Those edge detections are almost always phantoms (pre-serve bounces,
-    post-point camera moves). A segment with no strong detection at all is
-    left untouched.
-    """
-    def strong(b: BallDetection | None) -> bool:
-        return b is not None and not b.interpolated and b.confidence >= strong_confidence
-
-    strong_idx = [i for i, d in enumerate(detections) if strong(d)]
-    if not strong_idx:
-        return list(detections)
-    first, last = strong_idx[0], strong_idx[-1]
-    return [
-        d if (d is None or strong(d) or first <= i <= last) else None
-        for i, d in enumerate(detections)
-    ]
-
-
-def map_ball_to_court(
-    detection: BallDetection,
-    homography: np.ndarray | None,
-) -> tuple[float, float] | None:
-    """Map a ball detection from pixel coordinates to court coordinates.
-
-    Args:
-        detection: Ball detection with pixel (x, y).
-        homography: 3x3 homography matrix, or None if unavailable.
-
-    Returns:
-        (x, y) court coordinates in meters, or None if homography is None.
-    """
-    if homography is None:
-        return None
-
-    pixel = np.array([detection.x, detection.y, 1.0], dtype=np.float64)
-    transformed = homography @ pixel
-    w = transformed[2]
-    if abs(w) < 1e-10:
-        return (0.0, 0.0)
-
-    return (float(transformed[0] / w), float(transformed[1] / w))

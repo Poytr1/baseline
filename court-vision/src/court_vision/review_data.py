@@ -38,6 +38,7 @@ def load_match_json(path: Path) -> MatchData:
                 stroke=s["stroke"],
                 placement=placement,
                 confidence=s["confidence"],
+                speed_kmh=s.get("speed_kmh"),
             ))
 
         points.append(Point(

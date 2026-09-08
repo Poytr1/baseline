@@ -140,6 +140,7 @@ def stage_ball(
             confidence_threshold=p.ball_confidence_threshold,
             frame_step=auto_stride(p.ball_frame_step, frame_seq.fps),
             far_roi=ball_far_roi_for(court_detections, i, shape, p.ball_far_crop),
+            homography=(court_detections[i].homography if court_detections and i < len(court_detections) and court_detections[i].success else None),
             max_speed_px=p.ball_max_speed_px,
             max_gap_s=p.ball_max_gap_s,
             smooth_window=p.ball_smooth_window,
