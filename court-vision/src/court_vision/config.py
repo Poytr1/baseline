@@ -57,6 +57,7 @@ class PipelineSettings(BaseModel):
     contact_min_speed_norm: float = 0.02  # post-hit speed in hitter bbox-heights per 30fps-frame
     contact_swing_min: float = 0.12  # wrist speed (bbox-heights per 30fps-frame) for a swing candidate
     contact_use_swing: bool = True
+    close_up_ratio: float = 0.55  # a "player" taller than this fraction of the frame is a close-up
     proximity_threshold: float = 100.0  # legacy proximity method
     min_frames_between_contacts: int = 10  # legacy proximity method
 
@@ -102,7 +103,7 @@ STAGE_PARAMS: dict[str, tuple[str, ...]] = {
     "scoreboard": ("scoreboard_sample_s",),
     "shots": ("contact_method", "contact_min_gap_s", "contact_player_margin",
               "contact_min_turn_deg", "contact_min_speed_px", "contact_min_speed_norm", "contact_swing_min",
-              "contact_use_swing", "proximity_threshold",
+              "contact_use_swing", "close_up_ratio", "proximity_threshold",
               "min_frames_between_contacts", "point_split_gap_s", "point_pad_before_s",
               "point_pad_after_s", "near_player_hand", "far_player_hand",
               "slice_lookback_s", "slice_drop_ratio", "slice_min_torso_px", "volley_max_court_y",

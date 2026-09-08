@@ -653,6 +653,8 @@ def build_match_data(
                 swing_min=settings.contact_swing_min,
                 min_speed_norm=settings.contact_min_speed_norm,
                 max_speed_px=settings.ball_max_speed_px,
+                frame_height=int(settings.target_resolution[1]),
+                close_up_ratio=settings.close_up_ratio,
             )
         else:
             hits = [

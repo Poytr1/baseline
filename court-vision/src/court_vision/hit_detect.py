@@ -33,7 +33,7 @@ class Hit:
     turn_deg: float
     speed_pre: float
     speed_post: float
-    kind: str  # "turn" | "start" | "burst" | "swing" | "proximity"
+    kind: str  # "turn" | "start" | "burst" | "swing" | "proximity" | "fill"
     track_end: int = -1  # last frame of the continuous ball track after the hit (-1 = n/a)
 
 
@@ -48,6 +48,27 @@ def _dist_to_bbox(x: float, y: float, bbox: tuple[float, float, float, float]) -
     dx = max(x1 - x, 0.0, x - x2)
     dy = max(y1 - y, 0.0, y - y2)
     return math.hypot(dx, dy)
+
+
+def is_close_up(t: FrameTrackingResult, frame_height: int | None = None, ratio: float = 0.55) -> bool:
+    """A broadcast close-up that leaked through the scene filter: one
+    person fills the frame, so either a "player" box is taller than
+    ``ratio`` of the frame or the two role boxes sit on the same body (one
+    is mostly inside the other)."""
+    boxes = {p.role: p.bbox for p in t.players if p.role}
+    if frame_height:
+        for b in boxes.values():
+            if b[3] - b[1] > ratio * frame_height:
+                return True
+    if "near_player" in boxes and "far_player" in boxes:
+        a, b = boxes["near_player"], boxes["far_player"]
+        ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+        iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+        inter = ix * iy
+        smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+        if smaller > 0 and inter / smaller > 0.7:
+            return True
+    return False
 
 
 def _nearest_player(
@@ -96,6 +117,8 @@ def detect_hits(
     min_speed_norm: float = 0.03,
     max_speed_px: float = 150.0,
     trace: dict[int, str] | None = None,
+    frame_height: int | None = None,
+    close_up_ratio: float = 0.55,
 ) -> list[Hit]:
     """Detect racket contacts from ball motion + player proximity + pose.
 
@@ -202,6 +225,9 @@ def detect_hits(
                 continue  # gate: ball must be inside an expanded player bbox
             hitter = next((p for p in t.players if p.role == role), None)
             bbox_h = max(hitter.bbox[3] - hitter.bbox[1], 1.0) if hitter else 100.0
+            if is_close_up(t, frame_height, close_up_ratio):
+                note(f, "gate: close-up frame (player fills the frame / role boxes on one body)")
+                continue
             # perspective-invariant speed floor: a real hit sends the ball at
             # least this many body-heights per frame, near or far
             min_sp = max(min_speed_px, min_speed_norm * bbox_h)
@@ -296,7 +322,8 @@ def detect_hits(
                     return True
             return False
 
-        candidates.extend(_swing_candidates(tracking, fps, swing_min, player_margin, by_frame, ball_leaves))
+        candidates.extend(_swing_candidates(tracking, fps, swing_min, player_margin, by_frame, ball_leaves,
+                                            frame_height=frame_height, close_up_ratio=close_up_ratio))
 
     # A "start" candidate is the ball re-appearing *after* a far-side hit; if
     # a turn/swing candidate for the same player sits just before it (or at
@@ -325,7 +352,48 @@ def detect_hits(
         if all(abs(c.frame - k.frame) >= min_gap for k in kept):
             kept.append(c)
     kept.sort(key=lambda h: h.frame)
-    return enforce_alternation(kept, fps)
+    kept = enforce_alternation(kept, fps)
+    return fill_missed_returns(kept, by_frame, fps, player_margin=player_margin, min_gap=min_gap)
+
+
+def fill_missed_returns(
+    hits: list[Hit],
+    by_frame: dict[int, FrameTrackingResult],
+    fps: float,
+    player_margin: float = 0.6,
+    min_gap: int = 10,
+    max_interval_s: float = 4.0,
+) -> list[Hit]:
+    """Players strictly alternate within a rally. Two consecutive hits by the
+    same player less than ``max_interval_s`` apart mean the opponent's
+    return was missed (typically a far-court hit with the ball too small to
+    reverse cleanly); estimate it as the frame where the ball came closest
+    to the opponent's body in between. Longer gaps (second serves, a new
+    point) are left alone."""
+    max_interval = int(max_interval_s * fps)
+    out: list[Hit] = []
+    for h in sorted(hits, key=lambda h: h.frame):
+        if out and out[-1].role == h.role and 2 * min_gap < h.frame - out[-1].frame <= max_interval:
+            other = "far_player" if h.role == "near_player" else "near_player"
+            best = None
+            for f in range(out[-1].frame + min_gap, h.frame - min_gap + 1):
+                t = by_frame.get(f)
+                if t is None or t.ball is None or is_close_up(t):
+                    continue
+                p = next((p for p in t.players if p.role == other), None)
+                if p is None:
+                    continue
+                if _dist_to_bbox(t.ball.x, t.ball.y, _expanded_bbox(p, player_margin)) > 0.0:
+                    continue
+                cx, cy = (p.bbox[0] + p.bbox[2]) / 2, (p.bbox[1] + p.bbox[3]) / 2
+                d = math.hypot(t.ball.x - cx, t.ball.y - cy) / max(p.bbox[3] - p.bbox[1], 1.0)
+                if best is None or d < best[0]:
+                    best = (d, f, (t.ball.x, t.ball.y))
+            if best is not None:
+                out.append(Hit(frame=best[1], role=other, score=0.5, ball_xy=best[2], turn_deg=0.0,
+                               speed_pre=0.0, speed_post=0.0, kind="fill"))
+        out.append(h)
+    return out
 
 
 def enforce_alternation(hits: list[Hit], fps: float, max_same_role_gap_s: float = 1.5) -> list[Hit]:
@@ -337,7 +405,7 @@ def enforce_alternation(hits: list[Hit], fps: float, max_same_role_gap_s: float 
     # Direct evidence of contact (a reversal) beats a track merely starting
     # (the ball re-appearing, or a toss leaving the hand); swings are timed
     # from noisy wrists and rank lowest.
-    rank = {"turn": 2, "burst": 1, "start": 0, "swing": 0, "proximity": 0}
+    rank = {"turn": 2, "burst": 1, "start": 0, "swing": 0, "proximity": 0, "fill": 0}
     out: list[Hit] = []
     for h in sorted(hits, key=lambda h: h.frame):
         if out and out[-1].role == h.role and h.frame - out[-1].frame < gap:
@@ -405,6 +473,8 @@ def _swing_candidates(
     player_margin: float,
     by_frame: dict[int, FrameTrackingResult],
     ball_leaves=None,
+    frame_height: int | None = None,
+    close_up_ratio: float = 0.55,
 ) -> list[Hit]:
     out: list[Hit] = []
     support = max(2, int(round(fps / 5.0)))  # frames around the peak to look for the ball
@@ -435,6 +505,9 @@ def _swing_candidates(
             while onset > lo and sm[onset - 1] >= 0.5 * sm[i] and sm[onset - 1] <= sm[onset]:
                 onset -= 1
             f = frames_s[onset]
+            t_f = by_frame.get(f)
+            if t_f is not None and is_close_up(t_f, frame_height, close_up_ratio):
+                continue  # close-up, not play
             # ball support: any ball sample inside the expanded bbox nearby
             ball_xy = None
             for df in sorted(range(-support, support + 1), key=abs):

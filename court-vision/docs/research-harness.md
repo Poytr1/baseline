@@ -120,8 +120,10 @@ precision of our hit detector on an independent broadcast source.
 | `ball_frame_step` | auto | 3-frame window spacing (2 at 60 fps) |
 | `player_model` / `player_imgsz` | yolov8s-pose / 1280 | one YOLO-pose pass gives boxes + 17 keypoints; far court is also cropped and upscaled |
 | `contact_method` | trajectory | hits from ball direction change + player proximity + wrist-speed peaks, with an "away from hitter" test that rejects bounces |
-| `contact_min_gap_s` | 0.45 | minimum time between hits; same-player hits within 1.5 s collapse |
-| `near_player_hand` / `far_player_hand` | auto | handedness (auto = inferred from the serve pose) |
+| `contact_min_gap_s` | 0.6 | minimum time between hits; same-player hits within 1.5 s collapse to the best-evidenced one |
+| `close_up_ratio` | 0.55 | a "player" taller than this fraction of the frame is a close-up, never a hitter |
+| (built in) | – | players alternate: a missed return between two same-player hits < 4 s apart is filled at the ball's closest approach to the opponent |
+| `near_player_hand` / `far_player_hand` | auto | handedness (auto = image side of the racket arm on serves; override per clip in `clips.yaml`) |
 | `slice_drop_ratio` | 0.3 | racket wrist drop (torso lengths) over the look-back that marks a slice |
 | `outcome_method` | auto | scoreboard OCR first, then ball landing (in/out/net), else unknown |
 | `point_split_gap_s` | 4.0 | gap between hits that starts a new point inside one camera segment |
@@ -171,3 +173,17 @@ eval-ball --method wasb`):
 
 One clip (`game7/Clip7`, 124 visible frames) produced no detections at all
 and accounts for most of the missed frames and hits.
+
+### Full highlights reel (no labels)
+
+`court-vision research run houston134s` on the 134 s Shelton–Zhang reel
+(8,030 frames, 9 camera segments) takes about 25 minutes cold on an M2 Pro
+(ball 2 × WASB ≈ 20 min, players ≈ 5 min, scoreboard OCR ≈ 2 min) and seconds
+warm. It yields 10 points / 45 shots with players strictly alternating in
+every rally, serves found at the start of 7 of the 8 full points, and winners
+for 8 of the 10 points (7 from the score graphic, 1 from the landing; the
+two `unknown` points are 1–2 s fragments). Point 2 reproduces the corrected
+28 s labels shot for shot. Reviewing its contact sheets is how the close-up
+guard, the missed-return fill and the second label error were found — the
+packet under `runs/experiments/…houston134s…/REVIEW.md` is the starting
+point for labelling the reel.
