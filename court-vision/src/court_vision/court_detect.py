@@ -850,25 +850,26 @@ def detect_court_neural(
     )
 
 
-def detect_court(frame: np.ndarray) -> CourtDetectionResult:
+def detect_court(frame: np.ndarray, method: str = "auto") -> CourtDetectionResult:
     """Detect the tennis court in a frame and compute the homography.
-
-    Tries neural keypoint detection first, falls back to classical
-    Hough-line pipeline if neural detection fails or weights unavailable.
 
     Args:
         frame: BGR image as numpy array (H, W, 3).
+        method: "auto" (neural keypoints, classical Hough fallback),
+                "neural" or "classical".
 
     Returns:
         CourtDetectionResult with homography if successful.
     """
-    # Try neural detection first
-    try:
-        result = detect_court_neural(frame)
-        if result.success:
-            return result
-    except Exception:
-        pass  # Fall through to classical pipeline
+    if method in ("auto", "neural"):
+        try:
+            result = detect_court_neural(frame)
+            if result.success or method == "neural":
+                return result
+        except Exception:
+            if method == "neural":
+                return CourtDetectionResult(success=False, num_lines_detected=0)
+            # Fall through to classical pipeline
     h, w = frame.shape[:2]
 
     # Step 1: Detect lines
@@ -952,6 +953,7 @@ def detect_court(frame: np.ndarray) -> CourtDetectionResult:
 def compute_segment_homographies(
     frames_dir: Path,
     segments: list[GameplaySegment],
+    method: str = "auto",
 ) -> list[CourtDetectionResult]:
     """Compute a homography for each gameplay segment.
 
@@ -986,7 +988,7 @@ def compute_segment_homographies(
             if frame is None:
                 continue
 
-            result = detect_court(frame)
+            result = detect_court(frame, method=method)
             if result.success:
                 best_result = result
                 break  # Use first successful detection

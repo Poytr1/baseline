@@ -52,6 +52,8 @@ def load_match_json(path: Path) -> MatchData:
             outcome_player=p.get("outcome_player"),
             rally_length=p["rally_length"],
             review_status=p.get("review_status", "pending"),
+            winner=p.get("winner"),
+            outcome_source=p.get("outcome_source"),
         ))
 
     return MatchData(

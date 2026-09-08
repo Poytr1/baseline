@@ -1,0 +1,25 @@
+# Clip registry for the auto-research harness.
+#
+# Paths are relative to the court-vision directory. `ground_truth` is a
+# human-corrected match_data.json; `stage_labels` is the per-stage label
+# fixture (court corners / ball centres / player boxes) used to score the
+# vision stages independently of the final shot list.
+clips:
+  vienna7s:
+    video: data/test_input_video.mp4
+    frames_dir: data/frames
+    ground_truth: data/match_data.json
+    stage_labels: data/autotune_labels.json
+    notes: "Djokovic v Sonego, Vienna indoor hard, 30 fps, 1 point / 5 shots"
+  houston28s:
+    video: output/video_28s.mp4
+    frames_dir: output/frames
+    ground_truth: output/match_data.json
+    notes: "Shelton v Zhang, Houston clay, 59.94 fps highlights, 2 points / 13 shots"
+    # Ben Shelton (near player in both points) is left-handed. Leave these
+    # out to test automatic handedness inference.
+    # overrides: {near_player_hand: left}
+  houston134s:
+    video: output/video.mp4
+    frames_dir: output/frames_full
+    notes: "Full Shelton v Zhang highlights reel (no GT yet; use scoreboard + review to label)"

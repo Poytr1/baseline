@@ -1,0 +1,9 @@
+# Stage-5 knobs: cheap to sweep (cached vision stages).
+name: contacts
+clips: [vienna7s, houston28s]
+params:
+  contact_min_gap_s: [0.35, 0.45, 0.6]
+  contact_min_turn_deg: [30, 40, 55]
+  contact_player_margin: [0.4, 0.6, 0.8]
+  contact_swing_min: [0.12, 0.15, 0.2]
+max_runs: 24

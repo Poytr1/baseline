@@ -2,6 +2,11 @@
 
 Automated shot-by-shot tennis data extraction from broadcast video.
 
+Pipeline: frame extraction → gameplay segmentation → court homography
+(neural keypoints, classical fallback) → ball tracking (WASB / TrackNet) →
+players + pose (YOLO-pose, court-aware tracking) → scoreboard OCR → hits,
+strokes, points and point winners.
+
 ## Setup
 
 ```bash
@@ -9,114 +14,62 @@ cd court-vision
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+brew install ffmpeg            # preview encoding
 ```
+
+Model weights (WASB, TrackNet, court keypoints, YOLO-pose) download on first
+use into `~/.cache/court-vision/models/`. Scoreboard OCR uses RapidOCR
+(bundled ONNX models); `tesseract` is an optional fallback.
 
 ## Usage
 
 ```bash
-# Process a YouTube match (prints gameplay segments to stdout)
+# Process a YouTube match or a local file -> match_data.json next to the frames
 court-vision process "https://youtube.com/watch?v=abc123"
+court-vision process match.mp4 --config court-vision.yaml
 
-# Process a local video file
-court-vision process match.mp4
-```
-
-## Preview
-
-Generate an annotated video with court, player, and ball overlays rendered on each frame:
-
-```bash
-# From a local video
-court-vision preview match.mp4
-
-# Specify output path
+# Annotated preview video (court, ball trail, players, pose)
 court-vision preview match.mp4 --output annotated.mp4
 
-# With a custom config
-court-vision preview match.mp4 --config config.yaml
+# Compare a run with human-corrected labels
+court-vision evaluate output/match_data.json corrected.json
+
+# Streamlit review UI for correcting shots
+court-vision review output/match_data.json --frames output/frames --tracking output/tracking_data.json
 ```
 
-This runs the full pipeline, renders overlays on every frame, and encodes the result to H.264 via ffmpeg. The output defaults to `<source>_preview.mp4` in the same directory as the input.
+Every knob lives under `pipeline:` in `court-vision.yaml`; see
+`src/court_vision/config.py` for the full list and defaults.
 
-## Evaluate & Tune
+## Auto-research harness
 
-The evaluate/tune workflow lets you measure pipeline accuracy against human-corrected ground truth and optimize contact detection parameters — without re-running the expensive neural inference stages.
-
-### Prerequisites
-
-You need two files:
-
-- **`tracking_data.json`** — Cached per-frame tracking data (ball, players, poses) from a pipeline run.
-- **Ground truth JSON** — A human-corrected `match_data.json` (e.g. produced via the `review` UI).
-
-### Evaluate
-
-Compare pipeline output against ground truth:
+`court-vision research …` runs the pipeline on registered example clips with
+a per-stage cache, scores each run against corrected labels, renders the
+keyframes that matter (every predicted hit, every missed hit, point
+boundaries) into contact sheets for Claude Code / human review, and folds
+review verdicts and feedback back into the labels.
 
 ```bash
-court-vision evaluate data/match_data.json data/ground_truth.json
+court-vision research run houston28s --tag base
+court-vision research run houston28s -s contact_min_gap_s=0.6 -s ball_confidence_threshold=0.25
+court-vision research sweep research/sweeps/contacts.yaml
+court-vision research leaderboard
+court-vision research feedback add vienna7s --frame 182 --stroke forehand
+court-vision research dataset fetch court && court-vision research dataset eval-court
 ```
 
-Reports precision, recall, F1 for contact detection, plus stroke and player attribution accuracy. Use `--tolerance` to adjust the frame-matching window (default 15 frames = 0.5s at 30fps):
+See [docs/research-harness.md](docs/research-harness.md) for the loop,
+the scorecard, the review/feedback format and the public-dataset
+cross-validation.
 
-```bash
-court-vision evaluate data/match_data.json data/ground_truth.json --tolerance 10
-```
+## Output format
 
-### Tune
-
-Grid-search over `proximity_threshold` and `min_frames_between_contacts` to find the parameter combination that maximizes F1:
-
-```bash
-court-vision tune data/ground_truth.json data/tracking_data.json
-```
-
-This re-runs only shot classification (Stage 5) on cached tracking data for each parameter combination, so it completes in seconds. Options:
-
-```bash
-# Specify the source video (used for match ID)
-court-vision tune data/ground_truth.json data/tracking_data.json --source match.mp4
-
-# Show top 10 results instead of default 5
-court-vision tune data/ground_truth.json data/tracking_data.json --top 10
-```
-
-Output shows the top parameter combinations ranked by F1, e.g.:
-
-```
-Top 5 parameter combinations:
-
-  1. F1=0.80  P=0.85  R=0.75  Stroke=0.67  prox=100  min_frames=10
-  2. F1=0.78  P=0.90  R=0.69  Stroke=0.64  prox=75   min_frames=8
-  ...
-```
-
-## Review UI
-
-The review UI is a Streamlit app for inspecting and correcting pipeline output shot-by-shot.
-
-### Prerequisites
-
-- **`match_data.json`** — Pipeline output from `court-vision process`.
-- **Frames directory** — The extracted frames (e.g. `data/frames/`).
-- **`tracking_data.json`** (optional) — Per-frame tracking data for ball/player overlays.
-
-### Launch
-
-```bash
-court-vision review data/match_data.json --frames data/frames/ --tracking data/tracking_data.json
-```
-
-This opens the Streamlit app in your browser. From there you can:
-
-- Browse points and navigate frame-by-frame with the slider
-- Edit shot stroke types and player attribution
-- Add or delete shots at specific frames
-- Approve high-confidence points in bulk
-- Jump to low-confidence points for manual review
-- Save corrected data back to the JSON file
-
-The `--frames` and `--tracking` options can also be set from within the UI sidebar after launch.
+`match_data.json`: `points[]` with `start_frame`, `end_frame`, `server`,
+`winner`, `outcome` (`winner` / `error` by `outcome_player`),
+`outcome_source` (`scoreboard` / `trajectory` / `unknown`) and `shots[]`
+(`frame`, `player`, `stroke` ∈ forehand / backhand / serve / volley /
+overhead / slice, `placement`, `confidence`). `metadata.hits` keeps the raw
+hit-detector evidence for each shot.
 
 ## Development
 

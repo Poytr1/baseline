@@ -220,32 +220,6 @@ def evaluate(
 
 
 @app.command()
-def tune(
-    ground_truth: Path = typer.Argument(help="Path to human-corrected ground truth JSON."),
-    tracking_json: Path = typer.Argument(help="Path to cached tracking data JSON."),
-    source: str = typer.Option("data/test_input_video.mp4", "--source", "-s", help="Source video path for match ID."),
-    top_n: int = typer.Option(5, "--top", "-n", help="Number of top results to show."),
-) -> None:
-    """Tune contact detection parameters via grid search."""
-    from court_vision.tune import grid_search
-
-    typer.echo("Running grid search...")
-    results = grid_search(ground_truth, tracking_json, source=source)
-
-    typer.echo(f"\nTop {top_n} parameter combinations:\n")
-    for i, r in enumerate(results[:top_n], 1):
-        typer.echo(f"  {i}. F1={r.evaluation.f1:.2f}  P={r.evaluation.precision:.2f}  R={r.evaluation.recall:.2f}  "
-                   f"Stroke={r.evaluation.stroke_accuracy:.2f}  "
-                   f"prox={r.params['proximity_threshold']:.0f}  "
-                   f"min_frames={r.params['min_frames_between_contacts']}")
-
-    if results:
-        best = results[0]
-        typer.echo(f"\nBest: proximity_threshold={best.params['proximity_threshold']:.0f}, "
-                   f"min_frames_between_contacts={best.params['min_frames_between_contacts']}")
-
-
-@app.command()
 def review(
     match_json: Path = typer.Argument(help="Path to match data JSON file."),
     frames_dir: Optional[Path] = typer.Option(None, "--frames", help="Path to extracted frames directory."),
@@ -272,6 +246,206 @@ def review(
 
     typer.echo(f"Launching review UI for {match_json}...")
     subprocess.run(cmd)
+
+
+research_app = typer.Typer(name="research", help="Auto-research harness: run, sweep, review, feedback.")
+app.add_typer(research_app, name="research")
+
+
+@research_app.command("clips")
+def research_clips(registry: Optional[Path] = typer.Option(None, "--registry", help="clips.yaml path.")) -> None:
+    """List registered example clips."""
+    from court_vision.research.clips import load_clips
+
+    for c in load_clips(registry).values():
+        gt = "GT" if c.has_ground_truth else "no GT"
+        typer.echo(f"{c.name:14s} {c.video}  [{gt}]  {c.notes}")
+
+
+@research_app.command("run")
+def research_run(
+    clip: str = typer.Argument(help="Clip name from research/clips.yaml."),
+    set_: list[str] = typer.Option([], "--set", "-s", help="Config override key=value (repeatable)."),
+    tag: Optional[str] = typer.Option(None, "--tag", "-t", help="Experiment tag."),
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Base config YAML."),
+    root: Path = typer.Option(Path("runs"), "--root", help="Runs root (cache + experiments)."),
+    registry: Optional[Path] = typer.Option(None, "--registry"),
+    force: list[str] = typer.Option([], "--force", "-f", help="Recompute these stages even if cached."),
+    no_keyframes: bool = typer.Option(False, "--no-keyframes", help="Skip keyframe rendering."),
+) -> None:
+    """Run one experiment: pipeline (cached per stage) -> scorecard -> review packet."""
+    from court_vision.research.experiment import parse_override, run_experiment
+
+    overrides = dict(parse_override(o) for o in set_)
+    res = run_experiment(clip, overrides, tag=tag, root=root, registry=registry, force=set(force),
+                         keyframes=not no_keyframes, config_path=config)
+    typer.echo(f"\nscore={res.scorecard.score:.4f}  ->  {res.directory}/REVIEW.md")
+
+
+@research_app.command("sweep")
+def research_sweep(
+    sweep_file: Path = typer.Argument(help="Sweep YAML (see research/sweeps/)."),
+    clips: Optional[str] = typer.Option(None, "--clips", help="Comma-separated clip names (overrides file)."),
+    root: Path = typer.Option(Path("runs"), "--root"),
+    registry: Optional[Path] = typer.Option(None, "--registry"),
+    top: int = typer.Option(10, "--top"),
+) -> None:
+    """Grid/random sweep over config knobs across clips; prints a ranked table."""
+    from court_vision.research.sweep import load_sweep, run_sweep
+
+    rows = run_sweep(load_sweep(sweep_file), root=root, registry=registry,
+                     clips=clips.split(",") if clips else None)
+    typer.echo("")
+    for r in rows[:top]:
+        typer.echo(f"{r['mean_score']:.4f}  {r['overrides']}  {r['per_clip']}")
+
+
+@research_app.command("leaderboard")
+def research_leaderboard(
+    root: Path = typer.Option(Path("runs"), "--root"),
+    clip: Optional[str] = typer.Option(None, "--clip"),
+    top: int = typer.Option(15, "--top"),
+) -> None:
+    """Show the best experiments so far."""
+    from court_vision.research.experiment import load_leaderboard
+
+    rows = [r for r in load_leaderboard(root) if not clip or r["clip"] == clip]
+    rows.sort(key=lambda r: r["score"], reverse=True)
+    for r in rows[:top]:
+        typer.echo(f"{r['score']:.4f} f1={r['shot_f1']:.2f} win={r['outcome']} pts={r['points']} side={r['side']} "
+                   f"{r['clip']:11s} {r.get('tag') or ''} {r['overrides']}  {r['dir']}")
+
+
+@research_app.command("apply-review")
+def research_apply_review(
+    experiment_dir: Path = typer.Argument(help="Experiment directory containing review.json."),
+    registry: Optional[Path] = typer.Option(None, "--registry"),
+    out: Optional[Path] = typer.Option(None, "--out", help="Write corrected GT here instead of in place."),
+) -> None:
+    """Fold a review.json (Claude Code or human) into the clip's ground truth."""
+    import yaml as _yaml
+
+    from court_vision.research.clips import get_clip
+    from court_vision.research.review import apply_review_to_ground_truth, load_review
+
+    cfg = _yaml.safe_load((experiment_dir / "config.yaml").read_text())
+    clip = get_clip(cfg["clip"], registry)
+    if not clip.has_ground_truth:
+        typer.echo("clip has no ground truth to correct; create one from match_data.json first", err=True)
+        raise typer.Exit(1)
+    path = apply_review_to_ground_truth(load_review(experiment_dir / "review.json"), clip.ground_truth, out_path=out)
+    typer.echo(f"ground truth updated: {path}")
+
+
+feedback_app = typer.Typer(name="feedback", help="Record and apply human feedback.")
+research_app.add_typer(feedback_app, name="feedback")
+
+
+@feedback_app.command("add")
+def feedback_add(
+    clip: str = typer.Argument(help="Clip name."),
+    frame: Optional[int] = typer.Option(None, "--frame", help="Contact frame to correct/add/delete."),
+    player: Optional[str] = typer.Option(None, "--player", help="near_player | far_player"),
+    stroke: Optional[str] = typer.Option(None, "--stroke", help="forehand|backhand|serve|volley|overhead|slice"),
+    add: bool = typer.Option(False, "--add", help="Add a missing shot at --frame."),
+    delete: bool = typer.Option(False, "--delete", help="Remove the GT shot nearest --frame."),
+    point: Optional[int] = typer.Option(None, "--point", help="Point number for winner/server feedback."),
+    winner: Optional[str] = typer.Option(None, "--winner"),
+    server: Optional[str] = typer.Option(None, "--server"),
+    note: Optional[str] = typer.Option(None, "--note"),
+    author: str = typer.Option("human", "--author"),
+) -> None:
+    """Append one feedback entry for a clip."""
+    from court_vision.research.feedback import add_feedback
+
+    entry = {k: v for k, v in dict(frame=frame, player=player, stroke=stroke, add=add or None, delete=delete or None,
+                                    point=point, winner=winner, server=server, note=note).items() if v is not None}
+    if not entry:
+        typer.echo("nothing to record", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"recorded -> {add_feedback(clip, entry, author=author)}")
+
+
+@feedback_app.command("apply")
+def feedback_apply(
+    clip: str = typer.Argument(help="Clip name."),
+    registry: Optional[Path] = typer.Option(None, "--registry"),
+) -> None:
+    """Apply all recorded feedback for a clip to its ground truth."""
+    from court_vision.research.feedback import apply_feedback
+
+    out = apply_feedback(clip, registry=registry)
+    typer.echo(f"ground truth updated: {out}" if out else "no feedback or no ground truth")
+
+
+@feedback_app.command("show")
+def feedback_show(clip: str = typer.Argument(help="Clip name.")) -> None:
+    """Print recorded feedback for a clip."""
+    from court_vision.research.feedback import load_feedback
+
+    for e in load_feedback(clip):
+        typer.echo(e)
+
+
+dataset_app = typer.Typer(name="dataset", help="Public datasets for cross-validation (subset fetch + eval).")
+research_app.add_typer(dataset_app, name="dataset")
+
+
+@dataset_app.command("fetch")
+def dataset_fetch(
+    which: str = typer.Argument(help="court | ball"),
+    out_dir: Path = typer.Option(Path("data/public_datasets"), "--out"),
+    n_images: int = typer.Option(300, "--n-images", help="court: number of labelled images."),
+    games: str = typer.Option("game7", "--games", help="ball: comma-separated TrackNet game folders."),
+    max_clips: Optional[int] = typer.Option(None, "--max-clips", help="ball: cap clips per game."),
+) -> None:
+    """Fetch a labelled subset over HTTP Range (no multi-GB download)."""
+    from court_vision.research.datasets import fetch_ball_subset, fetch_court_subset
+
+    if which == "court":
+        typer.echo(fetch_court_subset(out_dir, n_images=n_images))
+    elif which == "ball":
+        typer.echo(fetch_ball_subset(out_dir, games=tuple(games.split(",")), max_clips=max_clips))
+    else:
+        raise typer.BadParameter("which must be court or ball")
+
+
+@dataset_app.command("eval-court")
+def dataset_eval_court(
+    labels: Path = typer.Option(Path("data/public_datasets/court_labels.json"), "--labels"),
+    method: str = typer.Option("auto", "--method", help="auto | neural | classical"),
+    limit: Optional[int] = typer.Option(None, "--limit"),
+    out: Optional[Path] = typer.Option(None, "--out", help="Write JSON report here."),
+) -> None:
+    """Court detector accuracy on TennisCourtDetector images (14 keypoints)."""
+    import json as _json
+
+    from court_vision.research.dataset_eval import evaluate_court
+
+    ev = evaluate_court(labels, method=method, limit=limit)
+    typer.echo(_json.dumps(ev.to_dict(), indent=2))
+    if out:
+        out.write_text(_json.dumps({**ev.to_dict(), "per_image": ev.per_image}, indent=1))
+
+
+@dataset_app.command("eval-ball")
+def dataset_eval_ball(
+    manifest: Path = typer.Option(Path("data/public_datasets/tracknet/ball_clips.json"), "--manifest"),
+    method: str = typer.Option("wasb", "--method", help="wasb | tracknet"),
+    threshold: float = typer.Option(0.3, "--threshold"),
+    max_clips: Optional[int] = typer.Option(None, "--max-clips"),
+    no_hits: bool = typer.Option(False, "--no-hits", help="Skip player/hit evaluation (ball only)."),
+    out: Optional[Path] = typer.Option(None, "--out"),
+) -> None:
+    """Ball detector + hit detector accuracy on TrackNet clips (x/y + hit status labels)."""
+    import json as _json
+
+    from court_vision.research.dataset_eval import evaluate_ball
+
+    ev = evaluate_ball(manifest, method=method, confidence_threshold=threshold, max_clips=max_clips, with_hits=not no_hits)
+    typer.echo(_json.dumps(ev.to_dict(), indent=2))
+    if out:
+        out.write_text(_json.dumps(ev.to_dict(), indent=1))
 
 
 @app.command()
