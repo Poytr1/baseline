@@ -505,6 +505,9 @@ def estimate_bounce(
             continue  # no real fall-back before it (apex plateau, jitter)
         if right.max() - depth[i] < 0.3:
             continue  # not rising again yet
+        x, y = court[i]
+        if abs(y) > _BASELINE_Y + 2.0 or abs(x) > 7.0:
+            continue  # a ball cannot land there (behind the back fence): still airborne
         return court[i]
     return None
 

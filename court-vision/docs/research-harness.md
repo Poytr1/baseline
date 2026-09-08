@@ -132,12 +132,18 @@ Scorecards after the rework and the `contacts` sweep (`runs/leaderboard.jsonl`; 
 
 | clip | points | winner | shots P / R / F1 | FH-BH side | serve P/R | slice P/R | ball coverage |
 |---|---|---|---|---|---|---|---|
-| houston28s (59.94 fps, 2 points, 13 shots) | 2/2 | 2/2 | 1.00 / 1.00 / 1.00 | 9/9 | 1.0 / 1.0 | 1.0 / 0.5 | 0.87 |
+| houston28s (59.94 fps, 2 points, 13 shots) | 2/2 | 1/2† | 1.00 / 1.00 / 1.00 | 9/9 | 1.0 / 1.0 | 1.0 / 0.5 | 0.87 |
 | vienna7s (30 fps, 1 point, 5 shots) | 1/1 | unknown* | 1.00 / 1.00 / 1.00 | 3/3 | – | 0 / 0 | 0.93 |
 
 \* the 7 s clip ends with the ball still in flight after the last hit and the
 scoreboard never updates, so the pipeline reports `winner: null` /
-`outcome_source: unknown` rather than guessing. The two GT "slice" labels in
+`outcome_source: unknown` rather than guessing.  
+† point 2 of the 28 s clip also ends before the bounce and before the score
+graphic updates (`unknown`). The full 134 s reel shows the graphic going from
+"AD Zhang" to "40-40", i.e. the near player (Shelton) won — the original
+human label said the far player; it was corrected through `research feedback`,
+as was a forehand/backhand label in vienna7s. Two label errors in 18 shots /
+3 points is the level of noise reviews have to expect. The two GT "slice" labels in
 vienna7s are forehand-side contacts the wrist-drop rule does not flag.
 
 Starting point before the rework (same GT): houston28s shot F1 0.69, stroke
@@ -150,3 +156,18 @@ Court detector on 300 TennisCourtDetector validation images
 |---|---|---|---|---|---|
 | neural (default) | 300/300 | 3.4 px | 2.6 px | 87% | 97% |
 | classical Hough fallback | 286/300 | 67 px | 64 px | 7% | 12% |
+
+Ball and hit detector on TrackNet tennis `game7` (Federer–Kyrgios, Laver Cup
+2017; 9 clips, 1,881 labelled frames; `court-vision research dataset
+eval-ball --method wasb`):
+
+| metric | value |
+|---|---|
+| ball detected within 10 px / 20 px (visible frames) | 81% / 85% |
+| mean localisation error (matched frames) | 3.5 px |
+| false positives on ball-less frames | 16% |
+| hit-frame recall (TrackNet `status == 1`, ±8 frames) | 37/48 = 0.77 |
+| hit precision | 37/40 = 0.93 |
+
+One clip (`game7/Clip7`, 124 visible frames) produced no detections at all
+and accounts for most of the missed frames and hits.
