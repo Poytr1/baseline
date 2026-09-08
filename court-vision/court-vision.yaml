@@ -1,8 +1,16 @@
+# Court Vision pipeline configuration. Every key under `pipeline:` is a
+# PipelineSettings field (src/court_vision/config.py); omit keys to use the
+# defaults shown here.
 pipeline:
   target_resolution: [1280, 720]
-  fps_override: null
-  confidence_threshold: 0.7
-  max_interpolation_gap_s: 0.5
+  ball_detection_method: wasb        # wasb | tracknet
+  ball_confidence_threshold: 0.3
+  player_model: yolov8s-pose.pt
+  player_imgsz: 1280
+  contact_method: trajectory         # trajectory | proximity
+  near_player_hand: auto             # auto | right | left
+  far_player_hand: auto
+  outcome_method: auto               # auto | scoreboard | trajectory | last_hitter
 
 output:
   directory: output/

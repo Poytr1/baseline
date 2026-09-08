@@ -90,7 +90,6 @@ def detect_hits(
     min_turn_deg: float = 40.0,
     min_speed_px: float = 2.0,
     burst_ratio: float = 3.0,
-    track_gap_s: float = 0.5,
     homography: np.ndarray | None = None,
     use_swing: bool = True,
     swing_min: float = 0.12,
@@ -109,8 +108,6 @@ def detect_hits(
         min_speed_px: Minimum post-hit speed (px per 30fps-frame).
         burst_ratio: Speed jump ratio (post/pre) that counts as a hit even
             without a direction change (far-side serves).
-        track_gap_s: A ball track that (re)starts after a gap this long is
-            allowed to start with a hit ("start" candidates — serves).
         homography: Court homography; enables the court-space away test.
         use_swing: Also generate candidates from wrist-speed peaks.
         swing_min: Wrist speed threshold (bbox heights per 30fps-frame).
@@ -124,7 +121,6 @@ def detect_hits(
     w = max(2, int(round(fps / 15.0)))  # velocity window (frames)
     max_df = max(2 * w, int(round(fps / 3.0)))  # tolerated sample gap for velocity
     post_w = max(w, int(round(fps / 4.0)))  # away-test window
-    gap_frames = max(1, int(track_gap_s * fps))
     min_gap = max(1, int(min_gap_s * fps))
     court_depth = _court_depth_fn(homography) if homography is not None else None
 
@@ -302,9 +298,6 @@ def detect_hits(
 
         candidates.extend(_swing_candidates(tracking, fps, swing_min, player_margin, by_frame, ball_leaves))
 
-    # A "start" candidate is usually the ball re-appearing *after* a far-side
-    # hit; if a turn/swing candidate for the same player follows shortly, that
-    # one carries the real contact time.
     # A "start" candidate is the ball re-appearing *after* a far-side hit; if
     # a turn/swing candidate for the same player sits just before it (or at
     # most a few frames after — the swing onset lags a little), that one

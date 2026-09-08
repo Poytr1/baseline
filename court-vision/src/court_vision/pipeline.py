@@ -14,7 +14,6 @@ from pathlib import Path
 from court_vision.ball_tracker import BallDetection
 from court_vision.config import PipelineConfig, PipelineSettings, load_config
 from court_vision.court_detect import CourtDetectionResult, compute_segment_homographies
-from court_vision.device import get_device
 from court_vision.ingest import (
     FrameSequence,
     download_video,
@@ -27,12 +26,8 @@ from court_vision.player_detect import (
     detect_players_segment,
 )
 from court_vision.progress import make_callback, pipeline_progress
-from court_vision.scene_filter import (
-    GameplaySegment,
-    classify_frames,
-    filter_gameplay_segments,
-    load_scene_model,
-)
+from court_vision.heuristic_scene_filter import classify_frames_heuristic, smooth_classifications
+from court_vision.scene_filter import GameplaySegment, filter_gameplay_segments
 from court_vision.scoreboard import ScoreTimeline, read_scoreboard_timeline
 from court_vision.shot_classify import MatchData, build_match_data
 
@@ -80,33 +75,18 @@ def stage_ingest(
 def stage_scene(
     frame_seq: FrameSequence,
     config: PipelineConfig,
-    device=None,
-    scene_weights_path: Path | None = None,
     progress_callback=None,
 ) -> list[GameplaySegment]:
-    """Stage 2: classify frames and group contiguous gameplay into segments."""
+    """Stage 2: classify frames (court colour + line heuristics) and group
+    contiguous gameplay into segments."""
     p = config.pipeline
-    if p.scene_filter_mode == "heuristic":
-        from court_vision.heuristic_scene_filter import (
-            classify_frames_heuristic,
-            smooth_classifications,
-        )
-        results = classify_frames_heuristic(
-            frame_seq.frames_dir, frame_seq.total_frames,
-            gameplay_threshold=p.gameplay_threshold,
-            progress_callback=progress_callback,
-            stride=p.scene_filter_stride,
-        )
-        results = smooth_classifications(results, window_size=p.scene_smooth_window)
-    else:
-        if device is None:
-            device = get_device(override=config.device)
-        model = load_scene_model(scene_weights_path, device)
-        results = classify_frames(
-            frame_seq.frames_dir, frame_seq.total_frames, model, device,
-            progress_callback=progress_callback,
-            stride=p.scene_filter_stride,
-        )
+    results = classify_frames_heuristic(
+        frame_seq.frames_dir, frame_seq.total_frames,
+        gameplay_threshold=p.gameplay_threshold,
+        progress_callback=progress_callback,
+        stride=p.scene_filter_stride,
+    )
+    results = smooth_classifications(results, window_size=p.scene_smooth_window)
     segments = filter_gameplay_segments(results, frame_seq.fps)
     min_frames = int(p.min_segment_s * frame_seq.fps)
     return [s for s in segments if s.frame_count >= min_frames]
@@ -257,7 +237,6 @@ def run_pipeline(
     source: str,
     config_path: Path | None = None,
     output_dir: Path | None = None,
-    scene_weights_path: Path | None = None,
     show_progress: bool = True,
     config: PipelineConfig | None = None,
 ) -> PipelineResult:
@@ -269,8 +248,6 @@ def run_pipeline(
         source: YouTube URL or local video file path.
         config_path: Path to court-vision.yaml config. None for defaults.
         output_dir: Directory for pipeline output. None for config default.
-        scene_weights_path: Path to fine-tuned scene filter weights.
-                            None uses ImageNet pre-trained base.
         show_progress: Show Rich progress bars for each stage.
         config: Pre-built config (takes precedence over ``config_path``).
 
@@ -279,7 +256,6 @@ def run_pipeline(
     """
     if config is None:
         config = load_config(config_path)
-    device = get_device(override=config.device)
 
     if output_dir is None:
         output_dir = Path(config.output.directory)
@@ -292,10 +268,7 @@ def run_pipeline(
             progress.update(t, completed=frame_seq.total_frames, total=frame_seq.total_frames)
 
         t = progress.add_task("Classifying scenes", total=frame_seq.total_frames) if progress else None
-        segments = stage_scene(
-            frame_seq, config, device=device, scene_weights_path=scene_weights_path,
-            progress_callback=make_callback(progress, t),
-        )
+        segments = stage_scene(frame_seq, config, progress_callback=make_callback(progress, t))
         if progress:
             progress.update(t, completed=frame_seq.total_frames)
         gameplay_frames = sum(seg.frame_count for seg in segments)

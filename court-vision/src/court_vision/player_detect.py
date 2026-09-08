@@ -243,42 +243,6 @@ def detect_persons_with_far_crop(
     return merged
 
 
-# ── Legacy helpers (used when no homography is available) ────────────────────
-
-def filter_non_players(
-    detections: list[PlayerDetection],
-    frame_width: int,
-    min_bbox_area: float = 2500,
-    margin_ratio: float = 0.22,
-) -> list[PlayerDetection]:
-    """Filter out small detections in frame margins (ball caddies, line judges)."""
-    left_margin = frame_width * margin_ratio
-    right_margin = frame_width * (1 - margin_ratio)
-    filtered = []
-    for det in detections:
-        area = (det.bbox[2] - det.bbox[0]) * (det.bbox[3] - det.bbox[1])
-        center_x = (det.bbox[0] + det.bbox[2]) / 2
-        in_margin = center_x < left_margin or center_x > right_margin
-        if in_margin and area < min_bbox_area:
-            continue
-        filtered.append(det)
-    return filtered
-
-
-def assign_player_roles(players: list[PlayerDetection]) -> list[PlayerDetection]:
-    """Assign near_player/far_player by vertical position (top-2 by confidence)."""
-    if not players:
-        return []
-    top_players = sorted(players, key=lambda p: p.confidence, reverse=True)[:2]
-    if len(top_players) == 1:
-        top_players[0].role = "near_player"
-        return top_players
-    sorted_by_y = sorted(top_players, key=lambda p: p.bbox[3], reverse=True)
-    sorted_by_y[0].role = "near_player"
-    sorted_by_y[1].role = "far_player"
-    return sorted_by_y
-
-
 # ── Court-aware role tracker ─────────────────────────────────────────────────
 
 class PlayerTracker:

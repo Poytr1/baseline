@@ -377,16 +377,6 @@ def detect_contacts(
     return contacts
 
 
-def detect_point_boundaries(
-    segments: list[GameplaySegment],
-) -> list[tuple[int, int, float, float]]:
-    """One point per gameplay segment (legacy behaviour)."""
-    return [
-        (seg.start_frame, seg.end_frame, seg.start_time_s, seg.end_time_s)
-        for seg in segments
-    ]
-
-
 def split_hits_into_points(
     hits: list[Hit],
     segment: GameplaySegment,
@@ -507,7 +497,8 @@ def estimate_bounce(
     depth = np.array([abs(c[1]) for c in court], dtype=np.float64)
     k = max(1, int(round(fps / 30.0)))
     if len(depth) > 2 * k + 1:
-        depth = np.convolve(depth, np.ones(2 * k + 1) / (2 * k + 1), mode="same")
+        padded = np.pad(depth, k, mode="edge")
+        depth = np.convolve(padded, np.ones(2 * k + 1) / (2 * k + 1), mode="valid")
     win = max(2, int(round(fps / 10.0)))
     n = len(depth)
     for i in range(win, n - win):

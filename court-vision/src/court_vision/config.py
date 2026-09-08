@@ -20,7 +20,6 @@ class PipelineSettings(BaseModel):
     fps_override: int | None = None
 
     # ── scene filter / point segmentation ──
-    scene_filter_mode: Literal["heuristic", "ml"] = "heuristic"
     gameplay_threshold: float = 0.45
     scene_filter_stride: int = 5
     scene_smooth_window: int = 5
@@ -51,12 +50,12 @@ class PipelineSettings(BaseModel):
 
     # ── contact (hit) detection ──
     contact_method: Literal["trajectory", "proximity"] = "trajectory"
-    contact_min_gap_s: float = 0.45
+    contact_min_gap_s: float = 0.6  # sweep 2026-09-08 (research/sweeps/contacts.yaml)
     contact_player_margin: float = 0.6  # bbox expansion ratio for hit gating
-    contact_min_turn_deg: float = 40.0
+    contact_min_turn_deg: float = 30.0
     contact_min_speed_px: float = 1.0  # per 30fps-frame (absolute floor)
     contact_min_speed_norm: float = 0.02  # post-hit speed in hitter bbox-heights per 30fps-frame
-    contact_swing_min: float = 0.15  # wrist speed (bbox-heights per 30fps-frame) for a swing candidate
+    contact_swing_min: float = 0.12  # wrist speed (bbox-heights per 30fps-frame) for a swing candidate
     contact_use_swing: bool = True
     proximity_threshold: float = 100.0  # legacy proximity method
     min_frames_between_contacts: int = 10  # legacy proximity method
@@ -93,8 +92,7 @@ class PipelineConfig(BaseModel):
 # Which pipeline knobs feed which stage (used for cache keys in the harness).
 STAGE_PARAMS: dict[str, tuple[str, ...]] = {
     "ingest": ("target_resolution", "fps_override"),
-    "scene": ("scene_filter_mode", "gameplay_threshold", "scene_filter_stride",
-              "scene_smooth_window", "min_segment_s"),
+    "scene": ("gameplay_threshold", "scene_filter_stride", "scene_smooth_window", "min_segment_s"),
     "court": ("court_method",),
     "ball": ("ball_detection_method", "ball_confidence_threshold", "ball_frame_step", "ball_far_crop"),
     "ball_post": ("ball_max_speed_px", "ball_max_gap_s", "ball_smooth_window",

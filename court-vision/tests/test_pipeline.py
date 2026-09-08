@@ -1,644 +1,431 @@
-"""Tests for the pipeline orchestrator."""
+"""Tests for the pipeline orchestrator and its stage functions."""
 
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
+import torch
 
-from court_vision.pipeline import PipelineResult, run_pipeline
+from court_vision.config import PipelineConfig, PipelineSettings
+from court_vision.court_detect import CourtDetectionResult
+from court_vision.ingest import FrameSequence
+from court_vision.pipeline import (
+    PipelineResult,
+    auto_stride,
+    run_pipeline,
+    stage_ball,
+    stage_court,
+    stage_players,
+    stage_scene,
+    stage_scoreboard,
+    stage_shots,
+)
+from court_vision.player_detect import FrameTrackingResult
+from court_vision.scene_filter import GameplaySegment
+from court_vision.scoreboard import ScoreTimeline
+from court_vision.shot_classify import MatchData
+
+
+@pytest.fixture(autouse=True)
+def _no_ocr():
+    """Never run scoreboard OCR in tests."""
+    with patch("court_vision.pipeline.read_scoreboard_timeline", return_value=ScoreTimeline()):
+        yield
+
+
+def _segment(start: int, end: int, fps: float = 30.0) -> GameplaySegment:
+    return GameplaySegment(start_frame=start, end_frame=end, start_time_s=start / fps,
+                           end_time_s=end / fps, frame_count=end - start + 1)
+
+
+def _frame_seq(frames_dir: Path, fps: float = 30.0, total_frames: int = 100) -> FrameSequence:
+    return FrameSequence(frames_dir=frames_dir, fps=fps, total_frames=total_frames, resolution=(1280, 720))
+
+
+def _config(**overrides) -> PipelineConfig:
+    return PipelineConfig(pipeline=PipelineSettings(**overrides))
+
+
+@contextmanager
+def patched_pipeline(tmp_path: Path, config: PipelineConfig | None = None, fps: float = 30.0,
+                     total_frames: int = 100, segments=None, court=None, tracking=None, match=None):
+    """Patch every heavy stage of ``run_pipeline`` and yield the mocks."""
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(exist_ok=True)
+    with ExitStack() as stack:
+        p = lambda name, **kw: stack.enter_context(patch(f"court_vision.pipeline.{name}", **kw))  # noqa: E731
+        m = SimpleNamespace(frames_dir=frames_dir)
+        m.load_config = p("load_config", return_value=config or _config())
+        m.classify_frames_heuristic = p("classify_frames_heuristic", return_value=[])
+        m.smooth_classifications = p("smooth_classifications", return_value=[])
+        m.filter_gameplay_segments = p("filter_gameplay_segments", return_value=list(segments or []))
+        m.download_video = p("download_video")
+        m.extract_frames = p("extract_frames", return_value=_frame_seq(frames_dir, fps, total_frames))
+        m.compute_segment_homographies = p("compute_segment_homographies", return_value=list(court or []))
+        m.build_ball_trajectory = p("build_ball_trajectory", return_value={})
+        m.detect_players_segment = p("detect_players_segment", return_value=list(tracking or []))
+        m.read_scoreboard_timeline = p("read_scoreboard_timeline", return_value=ScoreTimeline())
+        m.build_match_data = p("build_match_data", return_value=match)
+        yield m
+
+
+class TestAutoStride:
+    @pytest.mark.parametrize("fps,expected", [(30.0, 1), (29.97, 1), (24.0, 1), (50.0, 2), (59.94, 2), (60.0, 2), (120.0, 4)])
+    def test_auto_rounds_fps_over_30(self, fps: float, expected: int):
+        assert auto_stride("auto", fps) == expected
+
+    def test_explicit_values_pass_through(self):
+        assert auto_stride(3, 60.0) == 3
+        assert auto_stride(1, 60.0) == 1
+
+    def test_never_below_one(self):
+        assert auto_stride(0, 30.0) == 1
+        assert auto_stride("auto", 5.0) == 1
 
 
 class TestRunPipeline:
-    @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.detect_players_segment")
-    @patch("court_vision.pipeline.build_ball_trajectory")
-    @patch("court_vision.pipeline.compute_segment_homographies")
-    @patch("court_vision.pipeline.extract_frames")
-    @patch("court_vision.pipeline.classify_frames")
-    @patch("court_vision.pipeline.filter_gameplay_segments")
-    @patch("court_vision.pipeline.load_scene_model")
-    @patch("court_vision.pipeline.get_device")
-    @patch("court_vision.pipeline.load_config")
-    def test_local_file_pipeline(
-        self,
-        mock_load_config: MagicMock,
-        mock_get_device: MagicMock,
-        mock_load_model: MagicMock,
-        mock_filter: MagicMock,
-        mock_classify: MagicMock,
-        mock_extract: MagicMock,
-        mock_homographies: MagicMock,
-        mock_build_ball: MagicMock,
-        mock_detect_players: MagicMock,
-        mock_build_match: MagicMock,
-        tmp_path: Path,
-    ):
+    def test_local_file_pipeline(self, tmp_path: Path):
         """Pipeline orchestrates ingest -> scene filter for a local file."""
-        import torch
-
-        from court_vision.config import PipelineConfig
-        from court_vision.ingest import FrameSequence
-        from court_vision.scene_filter import GameplaySegment
-
         video_path = tmp_path / "test.mp4"
         video_path.touch()
-
-        from court_vision.config import PipelineSettings
-
-        mock_load_config.return_value = PipelineConfig(
-            pipeline=PipelineSettings(scene_filter_mode="ml")
-        )
-        mock_get_device.return_value = torch.device("cpu")
-        mock_load_model.return_value = MagicMock()
-        mock_extract.return_value = FrameSequence(
-            frames_dir=tmp_path / "frames",
-            fps=30.0,
-            total_frames=100,
-            resolution=(1280, 720),
-        )
-        mock_classify.return_value = []
-        mock_filter.return_value = [
-            GameplaySegment(
-                start_frame=0, end_frame=50,
-                start_time_s=0.0, end_time_s=1.67,
-                frame_count=51,
-            )
-        ]
-        mock_homographies.return_value = []
-        mock_build_ball.return_value = {}
-        mock_detect_players.return_value = []
-        mock_build_match.return_value = None
-
-        result = run_pipeline(str(video_path), config_path=None)
+        with patched_pipeline(tmp_path, segments=[_segment(0, 50)]) as m:
+            result = run_pipeline(str(video_path), config_path=None)
 
         assert isinstance(result, PipelineResult)
         assert result.total_frames == 100
+        assert result.fps == 30.0
+        assert result.frames_dir == m.frames_dir
         assert len(result.gameplay_segments) == 1
-        mock_extract.assert_called_once()
-        mock_classify.assert_called_once()
+        assert result.gameplay_frame_count == 51
+        m.extract_frames.assert_called_once()
+        m.classify_frames_heuristic.assert_called_once()
+        m.download_video.assert_not_called()
 
-    @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.detect_players_segment")
-    @patch("court_vision.pipeline.build_ball_trajectory")
-    @patch("court_vision.pipeline.compute_segment_homographies")
-    @patch("court_vision.pipeline.download_video")
-    @patch("court_vision.pipeline.extract_frames")
-    @patch("court_vision.pipeline.classify_frames")
-    @patch("court_vision.pipeline.filter_gameplay_segments")
-    @patch("court_vision.pipeline.load_scene_model")
-    @patch("court_vision.pipeline.get_device")
-    @patch("court_vision.pipeline.load_config")
-    def test_youtube_url_triggers_download(
-        self,
-        mock_load_config: MagicMock,
-        mock_get_device: MagicMock,
-        mock_load_model: MagicMock,
-        mock_filter: MagicMock,
-        mock_classify: MagicMock,
-        mock_extract: MagicMock,
-        mock_download: MagicMock,
-        mock_homographies: MagicMock,
-        mock_build_ball: MagicMock,
-        mock_detect_players: MagicMock,
-        mock_build_match: MagicMock,
-        tmp_path: Path,
-    ):
-        """YouTube URLs trigger yt-dlp download before frame extraction."""
-        import torch
-
-        from court_vision.config import PipelineConfig
-        from court_vision.ingest import FrameSequence
-
-        from court_vision.config import PipelineSettings
-
-        mock_load_config.return_value = PipelineConfig(
-            pipeline=PipelineSettings(scene_filter_mode="ml")
-        )
-        mock_get_device.return_value = torch.device("cpu")
-        mock_load_model.return_value = MagicMock()
+    def test_youtube_url_triggers_download(self, tmp_path: Path):
         downloaded = tmp_path / "video.mp4"
         downloaded.touch()
-        mock_download.return_value = downloaded
-        mock_extract.return_value = FrameSequence(
-            frames_dir=tmp_path / "frames",
-            fps=30.0,
-            total_frames=50,
-            resolution=(1280, 720),
-        )
-        mock_classify.return_value = []
-        mock_filter.return_value = []
-        mock_homographies.return_value = []
-        mock_build_ball.return_value = {}
-        mock_detect_players.return_value = []
-        mock_build_match.return_value = None
+        with patched_pipeline(tmp_path, total_frames=50) as m:
+            m.download_video.return_value = downloaded
+            result = run_pipeline("https://www.youtube.com/watch?v=abc123", config_path=None, output_dir=tmp_path)
 
-        result = run_pipeline(
-            "https://www.youtube.com/watch?v=abc123",
-            config_path=None,
-            output_dir=tmp_path,
-        )
-
-        mock_download.assert_called_once()
+        m.download_video.assert_called_once()
+        assert m.download_video.call_args.args[0] == "https://www.youtube.com/watch?v=abc123"
+        assert m.extract_frames.call_args.args[0] == downloaded
         assert result.total_frames == 50
+
+    def test_prebuilt_config_takes_precedence_over_config_path(self, tmp_path: Path):
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+        config = _config(ball_detection_method="tracknet")
+        with patched_pipeline(tmp_path, segments=[_segment(0, 50)]) as m:
+            run_pipeline(str(video_path), config_path=tmp_path / "ignored.yaml", config=config)
+
+        m.load_config.assert_not_called()
+        assert m.build_ball_trajectory.call_args.kwargs["ball_method"] == "tracknet"
+
+    def test_output_dir_defaults_to_config_and_is_created(self, tmp_path: Path):
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+        config = PipelineConfig(pipeline=PipelineSettings())
+        config.output.directory = str(tmp_path / "out" / "nested")
+        with patched_pipeline(tmp_path, config=config):
+            run_pipeline(str(video_path), config_path=None)
+        assert (tmp_path / "out" / "nested").is_dir()
+
+    def test_short_segments_are_dropped(self, tmp_path: Path):
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+        segments = [_segment(0, 10), _segment(100, 200)]  # 11 frames < 1 s at 30 fps
+        with patched_pipeline(tmp_path, segments=segments):
+            result = run_pipeline(str(video_path), config_path=None)
+        assert [(s.start_frame, s.end_frame) for s in result.gameplay_segments] == [(100, 200)]
 
 
 class TestRunPipelineWithCourtDetection:
-    @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.detect_players_segment")
-    @patch("court_vision.pipeline.build_ball_trajectory")
-    @patch("court_vision.pipeline.compute_segment_homographies")
-    @patch("court_vision.pipeline.extract_frames")
-    @patch("court_vision.pipeline.classify_frames")
-    @patch("court_vision.pipeline.filter_gameplay_segments")
-    @patch("court_vision.pipeline.load_scene_model")
-    @patch("court_vision.pipeline.get_device")
-    @patch("court_vision.pipeline.load_config")
-    def test_pipeline_runs_court_detection_after_scene_filter(
-        self,
-        mock_load_config: MagicMock,
-        mock_get_device: MagicMock,
-        mock_load_model: MagicMock,
-        mock_filter: MagicMock,
-        mock_classify: MagicMock,
-        mock_extract: MagicMock,
-        mock_homographies: MagicMock,
-        mock_build_ball: MagicMock,
-        mock_detect_players: MagicMock,
-        mock_build_match: MagicMock,
-        tmp_path: Path,
-    ):
-        """Pipeline calls compute_segment_homographies after scene filter."""
-        import torch
-
-        from court_vision.config import PipelineConfig, PipelineSettings
-        from court_vision.court_detect import CourtDetectionResult
-        from court_vision.ingest import FrameSequence
-        from court_vision.scene_filter import GameplaySegment
-
+    def test_pipeline_runs_court_detection_after_scene_filter(self, tmp_path: Path):
         video_path = tmp_path / "test.mp4"
         video_path.touch()
+        segments = [_segment(0, 50)]
+        court_result = CourtDetectionResult(success=True, homography=np.eye(3), num_lines_detected=6)
+        with patched_pipeline(tmp_path, segments=segments, court=[court_result]) as m:
+            result = run_pipeline(str(video_path), config_path=None)
 
-        mock_load_config.return_value = PipelineConfig(
-            pipeline=PipelineSettings(scene_filter_mode="ml")
-        )
-        mock_get_device.return_value = torch.device("cpu")
-        mock_load_model.return_value = MagicMock()
-
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
-        mock_extract.return_value = FrameSequence(
-            frames_dir=frames_dir, fps=30.0, total_frames=100, resolution=(1280, 720),
-        )
-        mock_classify.return_value = []
-
-        segments = [
-            GameplaySegment(start_frame=0, end_frame=50, start_time_s=0.0, end_time_s=1.67, frame_count=51),
-        ]
-        mock_filter.return_value = segments
-
-        court_result = CourtDetectionResult(success=True, homography=MagicMock(), num_lines_detected=6)
-        mock_homographies.return_value = [court_result]
-        mock_build_ball.return_value = {}
-        mock_detect_players.return_value = []
-        mock_build_match.return_value = None
-
-        result = run_pipeline(str(video_path), config_path=None)
-
-        mock_homographies.assert_called_once_with(frames_dir, segments)
+        m.compute_segment_homographies.assert_called_once_with(m.frames_dir, segments, method="auto")
         assert result.court_detections is not None
         assert len(result.court_detections) == 1
         assert result.court_detections[0].success is True
 
-
-class TestRunPipelineWithTracking:
-    @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.detect_players_segment")
-    @patch("court_vision.pipeline.build_ball_trajectory")
-    @patch("court_vision.pipeline.compute_segment_homographies")
-    @patch("court_vision.pipeline.extract_frames")
-    @patch("court_vision.pipeline.classify_frames")
-    @patch("court_vision.pipeline.filter_gameplay_segments")
-    @patch("court_vision.pipeline.load_scene_model")
-    @patch("court_vision.pipeline.get_device")
-    @patch("court_vision.pipeline.load_config")
-    def test_pipeline_runs_tracking_after_court_detection(
-        self,
-        mock_load_config: MagicMock,
-        mock_get_device: MagicMock,
-        mock_load_model: MagicMock,
-        mock_filter: MagicMock,
-        mock_classify: MagicMock,
-        mock_extract: MagicMock,
-        mock_homographies: MagicMock,
-        mock_build_ball: MagicMock,
-        mock_detect_players: MagicMock,
-        mock_build_match: MagicMock,
-        tmp_path: Path,
-    ):
-        """Pipeline calls build_ball_trajectory and detect_players_segment after court detection."""
-        import torch
-
-        from court_vision.config import PipelineConfig, PipelineSettings
-        from court_vision.court_detect import CourtDetectionResult
-        from court_vision.ingest import FrameSequence
-        from court_vision.player_detect import FrameTrackingResult
-        from court_vision.scene_filter import GameplaySegment
-
+    def test_court_method_from_config(self, tmp_path: Path):
         video_path = tmp_path / "test.mp4"
         video_path.touch()
+        with patched_pipeline(tmp_path, config=_config(court_method="classical"), segments=[_segment(0, 50)]) as m:
+            run_pipeline(str(video_path), config_path=None)
+        assert m.compute_segment_homographies.call_args.kwargs == {"method": "classical"}
 
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
 
-        mock_load_config.return_value = PipelineConfig(
-            pipeline=PipelineSettings(scene_filter_mode="ml")
-        )
-        mock_get_device.return_value = torch.device("cpu")
-        mock_load_model.return_value = MagicMock()
-        mock_extract.return_value = FrameSequence(
-            frames_dir=frames_dir, fps=30.0, total_frames=100, resolution=(1280, 720),
-        )
-        mock_classify.return_value = []
+class TestRunPipelineWithTracking:
+    def test_pipeline_runs_tracking_after_court_detection(self, tmp_path: Path):
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+        tracking = [FrameTrackingResult(frame_index=0, ball=None, players=[], poses=[])]
+        with patched_pipeline(tmp_path, segments=[_segment(0, 50)],
+                              court=[CourtDetectionResult(success=True, num_lines_detected=6)],
+                              tracking=tracking) as m:
+            result = run_pipeline(str(video_path), config_path=None)
 
-        segments = [
-            GameplaySegment(start_frame=0, end_frame=50, start_time_s=0.0, end_time_s=1.67, frame_count=51),
-        ]
-        mock_filter.return_value = segments
-
-        court_result = CourtDetectionResult(success=True, num_lines_detected=6)
-        mock_homographies.return_value = [court_result]
-
-        mock_build_ball.return_value = {}
-        mock_detect_players.return_value = [
-            FrameTrackingResult(frame_index=0, ball=None, players=[], poses=[]),
-        ]
-        mock_build_match.return_value = None
-
-        result = run_pipeline(str(video_path), config_path=None)
-
-        mock_build_ball.assert_called_once()
-        mock_detect_players.assert_called_once()
+        m.build_ball_trajectory.assert_called_once()
+        m.detect_players_segment.assert_called_once()
         assert result.tracking_results is not None
         assert len(result.tracking_results) == 1
 
+    def test_ball_detection_method_threaded_to_build_ball_trajectory(self, tmp_path: Path):
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+        config = _config(ball_detection_method="tracknet", ball_confidence_threshold=0.42)
+        with patched_pipeline(tmp_path, config=config, segments=[_segment(0, 50)]) as m:
+            run_pipeline(str(video_path), config_path=None)
+
+        kwargs = m.build_ball_trajectory.call_args.kwargs
+        assert kwargs["ball_method"] == "tracknet"
+        assert kwargs["confidence_threshold"] == 0.42
+
+    def test_one_tracking_call_per_segment(self, tmp_path: Path):
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+        segments = [_segment(0, 50), _segment(100, 200)]
+        with patched_pipeline(tmp_path, segments=segments) as m:
+            run_pipeline(str(video_path), config_path=None)
+        assert m.build_ball_trajectory.call_count == 2
+        assert m.detect_players_segment.call_count == 2
+        assert [c.args[1] for c in m.detect_players_segment.call_args_list] == segments
+
 
 class TestRunPipelineWithShotClassification:
-    @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.detect_players_segment")
-    @patch("court_vision.pipeline.build_ball_trajectory")
-    @patch("court_vision.pipeline.compute_segment_homographies")
-    @patch("court_vision.pipeline.extract_frames")
-    @patch("court_vision.pipeline.classify_frames")
-    @patch("court_vision.pipeline.filter_gameplay_segments")
-    @patch("court_vision.pipeline.load_scene_model")
-    @patch("court_vision.pipeline.get_device")
-    @patch("court_vision.pipeline.load_config")
-    def test_pipeline_runs_shot_classification(
-        self,
-        mock_load_config: MagicMock,
-        mock_get_device: MagicMock,
-        mock_load_model: MagicMock,
-        mock_filter: MagicMock,
-        mock_classify: MagicMock,
-        mock_extract: MagicMock,
-        mock_homographies: MagicMock,
-        mock_build_ball: MagicMock,
-        mock_detect_players: MagicMock,
-        mock_build_match: MagicMock,
-        tmp_path: Path,
-    ):
-        """Pipeline calls build_match_data after tracking."""
-        import torch
-
-        from court_vision.config import PipelineConfig, PipelineSettings
-        from court_vision.court_detect import CourtDetectionResult
-        from court_vision.ingest import FrameSequence
-        from court_vision.scene_filter import GameplaySegment
-        from court_vision.shot_classify import MatchData
-
+    def test_pipeline_runs_shot_classification(self, tmp_path: Path):
         video_path = tmp_path / "test.mp4"
         video_path.touch()
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
-
-        mock_load_config.return_value = PipelineConfig(
-            pipeline=PipelineSettings(scene_filter_mode="ml")
-        )
-        mock_get_device.return_value = torch.device("cpu")
-        mock_load_model.return_value = MagicMock()
-        mock_extract.return_value = FrameSequence(
-            frames_dir=frames_dir, fps=30.0, total_frames=100, resolution=(1280, 720),
-        )
-        mock_classify.return_value = []
-        segments = [
-            GameplaySegment(start_frame=0, end_frame=50, start_time_s=0.0, end_time_s=1.67, frame_count=51),
-        ]
-        mock_filter.return_value = segments
-        mock_homographies.return_value = [CourtDetectionResult(success=True, num_lines_detected=6)]
-        mock_build_ball.return_value = {}
-        mock_detect_players.return_value = []
-        mock_build_match.return_value = MatchData(
-            match_id="test", source_url="test.mp4",
-            metadata={}, points=[],
-        )
-
-        result = run_pipeline(str(video_path), config_path=None)
-
-        mock_build_match.assert_called_once()
-        assert result.match_data is not None
-
-
-class TestRunPipelineWithHeuristicFilter:
-    @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.detect_players_segment")
-    @patch("court_vision.pipeline.build_ball_trajectory")
-    @patch("court_vision.pipeline.compute_segment_homographies")
-    @patch("court_vision.pipeline.extract_frames")
-    @patch("court_vision.pipeline.filter_gameplay_segments")
-    @patch("court_vision.pipeline.load_scene_model")
-    @patch("court_vision.pipeline.get_device")
-    @patch("court_vision.pipeline.load_config")
-    def test_heuristic_mode_uses_heuristic_filter(
-        self,
-        mock_load_config: MagicMock,
-        mock_get_device: MagicMock,
-        mock_load_model: MagicMock,
-        mock_filter: MagicMock,
-        mock_extract: MagicMock,
-        mock_homographies: MagicMock,
-        mock_build_ball: MagicMock,
-        mock_detect_players: MagicMock,
-        mock_build_match: MagicMock,
-        tmp_path: Path,
-    ):
-        """Pipeline uses heuristic filter when scene_filter_mode='heuristic'."""
-        import torch
-
-        from court_vision.config import PipelineConfig, PipelineSettings
-        from court_vision.ingest import FrameSequence
-
-        video_path = tmp_path / "test.mp4"
-        video_path.touch()
-
-        config = PipelineConfig(pipeline=PipelineSettings(scene_filter_mode="heuristic"))
-        mock_load_config.return_value = config
-        mock_get_device.return_value = torch.device("cpu")
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
-        mock_extract.return_value = FrameSequence(
-            frames_dir=frames_dir, fps=30.0, total_frames=100, resolution=(1280, 720),
-        )
-        mock_filter.return_value = []
-        mock_homographies.return_value = []
-        mock_build_ball.return_value = {}
-        mock_detect_players.return_value = []
-        mock_build_match.return_value = None
-
-        with patch("court_vision.heuristic_scene_filter.classify_frames_heuristic", return_value=[]) as mock_heuristic, \
-             patch("court_vision.heuristic_scene_filter.smooth_classifications", return_value=[]) as mock_smooth:
+        match = MatchData(match_id="test", source_url="test.mp4", metadata={}, points=[])
+        with patched_pipeline(tmp_path, segments=[_segment(0, 50)],
+                              court=[CourtDetectionResult(success=True, num_lines_detected=6)], match=match) as m:
             result = run_pipeline(str(video_path), config_path=None)
 
-        # Heuristic filter should be used, ML model should NOT be loaded
-        mock_load_model.assert_not_called()
-        mock_heuristic.assert_called_once()
-        mock_smooth.assert_called_once()
+        m.build_match_data.assert_called_once()
+        assert result.match_data is match
 
-
-class TestTrackSegmentUsesBuildTrajectory:
-    @patch("court_vision.player_detect.estimate_pose")
-    @patch("court_vision.player_detect.detect_players_in_frame")
-    @patch("court_vision.player_detect.build_trajectory")
-    def test_track_segment_calls_build_trajectory(
-        self,
-        mock_build_traj: MagicMock,
-        mock_detect_players: MagicMock,
-        mock_estimate_pose: MagicMock,
-        tmp_path: Path,
-    ):
-        """track_segment uses build_trajectory instead of per-frame detect_ball_in_frame."""
-        import numpy as np
-
-        from court_vision.ball_tracker import BallDetection, BallTrajectory
-        from court_vision.player_detect import track_segment
-        from court_vision.scene_filter import GameplaySegment
-
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
-        for i in range(5):
-            img = np.zeros((720, 1280, 3), dtype=np.uint8)
-            import cv2
-            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
-
-        segment = GameplaySegment(
-            start_frame=0, end_frame=4,
-            start_time_s=0.0, end_time_s=0.13, frame_count=5,
-        )
-
-        mock_build_traj.return_value = BallTrajectory(
-            detections=[
-                BallDetection(frame_index=0, x=100.0, y=200.0, confidence=0.8),
-                BallDetection(frame_index=2, x=150.0, y=250.0, confidence=0.7),
-            ],
-            fps=30.0,
-        )
-        mock_detect_players.return_value = []
-        mock_estimate_pose.return_value = None
-
-        results = track_segment(frames_dir, segment)
-
-        mock_build_traj.assert_called_once()
-        # Frame 0 and 2 should have ball data, frames 1/3/4 should have None
-        ball_frames = {r.frame_index: r.ball for r in results}
-        assert ball_frames.get(0) is not None
-        assert ball_frames.get(2) is not None
-        assert ball_frames.get(1) is None
-
-
-class TestPipelinePassesHomography:
-    @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.detect_players_segment")
-    @patch("court_vision.pipeline.build_ball_trajectory")
-    @patch("court_vision.pipeline.compute_segment_homographies")
-    @patch("court_vision.pipeline.extract_frames")
-    @patch("court_vision.pipeline.filter_gameplay_segments")
-    @patch("court_vision.pipeline.load_scene_model")
-    @patch("court_vision.pipeline.get_device")
-    @patch("court_vision.pipeline.load_config")
-    def test_homography_passed_to_build_match_data(
-        self,
-        mock_load_config: MagicMock,
-        mock_get_device: MagicMock,
-        mock_load_model: MagicMock,
-        mock_filter: MagicMock,
-        mock_extract: MagicMock,
-        mock_homographies: MagicMock,
-        mock_build_ball: MagicMock,
-        mock_detect_players: MagicMock,
-        mock_build_match: MagicMock,
-        tmp_path: Path,
-    ):
-        """Pipeline passes court_homography to build_match_data when available."""
-        import numpy as np
-        import torch
-
-        from court_vision.config import PipelineConfig, PipelineSettings
-        from court_vision.court_detect import CourtDetectionResult
-        from court_vision.ingest import FrameSequence
-        from court_vision.scene_filter import GameplaySegment
-
+    def test_homography_and_settings_passed_to_build_match_data(self, tmp_path: Path):
         video_path = tmp_path / "test.mp4"
         video_path.touch()
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
-
-        mock_load_config.return_value = PipelineConfig(
-            pipeline=PipelineSettings(scene_filter_mode="ml")
-        )
-        mock_get_device.return_value = torch.device("cpu")
-        mock_load_model.return_value = MagicMock()
-        mock_extract.return_value = FrameSequence(
-            frames_dir=frames_dir, fps=30.0, total_frames=100, resolution=(1280, 720),
-        )
-        mock_classify_result = []
-        mock_filter.return_value = [
-            GameplaySegment(start_frame=0, end_frame=50, start_time_s=0.0, end_time_s=1.67, frame_count=51),
-        ]
-
         fake_H = np.eye(3, dtype=np.float64)
-        mock_homographies.return_value = [
-            CourtDetectionResult(success=True, homography=fake_H, num_lines_detected=6),
-        ]
-        mock_build_ball.return_value = {}
-        mock_detect_players.return_value = []
-        mock_build_match.return_value = None
-
-        with patch("court_vision.pipeline.classify_frames", return_value=mock_classify_result):
+        config = _config(outcome_method="last_hitter")
+        court = [CourtDetectionResult(success=False), CourtDetectionResult(success=True, homography=fake_H, num_lines_detected=6)]
+        with patched_pipeline(tmp_path, config=config, segments=[_segment(0, 50), _segment(100, 200)], court=court) as m:
             run_pipeline(str(video_path), config_path=None)
 
-        # Verify court_homography was passed
-        call_kwargs = mock_build_match.call_args
-        assert call_kwargs is not None
-        # Check keyword args for court_homography
-        if call_kwargs.kwargs:
-            assert "court_homography" in call_kwargs.kwargs
-            passed_H = call_kwargs.kwargs["court_homography"]
-        else:
-            # court_homography is the 5th positional arg
-            passed_H = call_kwargs.args[4] if len(call_kwargs.args) > 4 else None
-        assert passed_H is not None
-        assert np.array_equal(passed_H, fake_H)
+        kwargs = m.build_match_data.call_args.kwargs
+        assert np.array_equal(kwargs["court_homography"], fake_H)  # first successful homography
+        assert kwargs["settings"] is config.pipeline
+        assert kwargs["segment_homographies"][0] is None
+        assert np.array_equal(kwargs["segment_homographies"][1], fake_H)
+        assert kwargs["fps"] == 30.0
+        assert kwargs["source"] == str(video_path)
 
 
-class TestPipelineThreadsBallMethod:
-    @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.detect_players_segment")
-    @patch("court_vision.pipeline.build_ball_trajectory")
-    @patch("court_vision.pipeline.compute_segment_homographies")
-    @patch("court_vision.pipeline.extract_frames")
-    @patch("court_vision.pipeline.filter_gameplay_segments")
-    @patch("court_vision.pipeline.load_scene_model")
-    @patch("court_vision.pipeline.get_device")
-    @patch("court_vision.pipeline.load_config")
-    def test_ball_detection_method_threaded_to_build_ball_trajectory(
-        self,
-        mock_load_config: MagicMock,
-        mock_get_device: MagicMock,
-        mock_load_model: MagicMock,
-        mock_filter: MagicMock,
-        mock_extract: MagicMock,
-        mock_homographies: MagicMock,
-        mock_build_ball: MagicMock,
-        mock_detect_players: MagicMock,
-        mock_build_match: MagicMock,
-        tmp_path: Path,
-    ):
-        """ball_detection_method from config is passed to build_ball_trajectory."""
-        import torch
-
-        from court_vision.config import PipelineConfig, PipelineSettings
-        from court_vision.ingest import FrameSequence
-        from court_vision.scene_filter import GameplaySegment
-
+class TestRunPipelineScoreboard:
+    def test_scoreboard_read_and_forwarded_in_auto_mode(self, tmp_path: Path):
         video_path = tmp_path / "test.mp4"
         video_path.touch()
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
+        timeline = ScoreTimeline(roi=(1, 2, 3, 4))
+        with patched_pipeline(tmp_path, segments=[_segment(0, 50)]) as m:
+            m.read_scoreboard_timeline.return_value = timeline
+            result = run_pipeline(str(video_path), config_path=None)
 
-        config = PipelineConfig(
-            pipeline=PipelineSettings(
-                scene_filter_mode="ml",
-                ball_detection_method="hsv",
-            )
-        )
-        mock_load_config.return_value = config
-        mock_get_device.return_value = torch.device("cpu")
-        mock_load_model.return_value = MagicMock()
-        mock_extract.return_value = FrameSequence(
-            frames_dir=frames_dir, fps=30.0, total_frames=100, resolution=(1280, 720),
-        )
-        mock_filter.return_value = [
-            GameplaySegment(
-                start_frame=0, end_frame=50,
-                start_time_s=0.0, end_time_s=1.67,
-                frame_count=51,
-            ),
-        ]
-        mock_homographies.return_value = []
-        mock_build_ball.return_value = {}
-        mock_detect_players.return_value = []
-        mock_build_match.return_value = None
+        m.read_scoreboard_timeline.assert_called_once()
+        assert m.read_scoreboard_timeline.call_args.args[:3] == (m.frames_dir, 100, 30.0)
+        assert m.read_scoreboard_timeline.call_args.kwargs["sample_s"] == 0.5
+        assert result.scoreboard is timeline
+        assert m.build_match_data.call_args.kwargs["scoreboard"] is timeline
 
-        with patch("court_vision.pipeline.classify_frames", return_value=[]):
+    @pytest.mark.parametrize("method", ["last_hitter", "trajectory"])
+    def test_scoreboard_skipped_when_not_needed(self, tmp_path: Path, method: str):
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+        with patched_pipeline(tmp_path, config=_config(outcome_method=method), segments=[_segment(0, 50)]) as m:
+            result = run_pipeline(str(video_path), config_path=None)
+        m.read_scoreboard_timeline.assert_not_called()
+        assert result.scoreboard is None
+        assert m.build_match_data.call_args.kwargs["scoreboard"] is None
+
+    def test_ocr_failure_never_fails_the_pipeline(self, tmp_path: Path):
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+        with patched_pipeline(tmp_path, segments=[_segment(0, 50)]) as m:
+            m.read_scoreboard_timeline.side_effect = RuntimeError("tesseract exploded")
+            result = run_pipeline(str(video_path), config_path=None)
+        assert result.scoreboard is None
+        m.build_match_data.assert_called_once()
+
+
+class TestRunPipelineSceneFilter:
+    def test_heuristic_filter_gets_config_knobs(self, tmp_path: Path):
+        video_path = tmp_path / "test.mp4"
+        video_path.touch()
+        with patched_pipeline(tmp_path, config=_config(scene_filter_stride=3, gameplay_threshold=0.5)) as m:
             run_pipeline(str(video_path), config_path=None)
 
-        # Verify build_ball_trajectory was called with ball_method="hsv"
-        call_kwargs = mock_build_ball.call_args
-        assert call_kwargs is not None
-        if call_kwargs.kwargs:
-            assert call_kwargs.kwargs.get("ball_method") == "hsv"
-        else:
-            assert False, "Expected ball_method='hsv' in build_ball_trajectory kwargs"
+        m.classify_frames_heuristic.assert_called_once()
+        assert m.classify_frames_heuristic.call_args.kwargs["stride"] == 3
+        assert m.classify_frames_heuristic.call_args.kwargs["gameplay_threshold"] == 0.5
+        m.smooth_classifications.assert_called_once()
+        assert m.smooth_classifications.call_args.kwargs["window_size"] == 5
 
 
-class TestTrackSegmentThreadsBallMethod:
-    @patch("court_vision.player_detect.estimate_pose")
-    @patch("court_vision.player_detect.detect_players_in_frame")
-    @patch("court_vision.player_detect.build_trajectory")
-    def test_track_segment_passes_ball_method_to_build_trajectory(
-        self,
-        mock_build_traj: MagicMock,
-        mock_detect_players: MagicMock,
-        mock_estimate_pose: MagicMock,
-        tmp_path: Path,
-    ):
-        """track_segment passes ball_method to build_trajectory."""
-        import numpy as np
+class TestStageScene:
+    def test_classifies_smooths_and_drops_short_segments(self, tmp_path: Path):
+        frame_seq = _frame_seq(tmp_path)
+        segments = [_segment(0, 10), _segment(100, 200)]
+        with patch("court_vision.pipeline.classify_frames_heuristic", return_value=["r"]) as classify, \
+             patch("court_vision.pipeline.smooth_classifications", return_value=["s"]) as smooth, \
+             patch("court_vision.pipeline.filter_gameplay_segments", return_value=segments) as filt:
+            out = stage_scene(frame_seq, _config(scene_filter_stride=2, min_segment_s=1.0))
 
-        from court_vision.ball_tracker import BallTrajectory
-        from court_vision.player_detect import track_segment
-        from court_vision.scene_filter import GameplaySegment
+        assert classify.call_args.args[:2] == (tmp_path, 100)
+        assert classify.call_args.kwargs["stride"] == 2
+        smooth.assert_called_once_with(["r"], window_size=5)
+        filt.assert_called_once_with(["s"], 30.0)
+        assert out == [segments[1]]  # 11-frame segment is shorter than min_segment_s
 
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
-        for i in range(3):
-            img = np.zeros((720, 1280, 3), dtype=np.uint8)
-            import cv2
-            cv2.imwrite(str(frames_dir / f"frame_{i:06d}.jpg"), img)
 
-        segment = GameplaySegment(
-            start_frame=0, end_frame=2,
-            start_time_s=0.0, end_time_s=0.07, frame_count=3,
+class TestStageCourt:
+    def test_passes_method_from_config(self, tmp_path: Path):
+        frame_seq = _frame_seq(tmp_path)
+        segments = [_segment(0, 50)]
+        with patch("court_vision.pipeline.compute_segment_homographies", return_value=["cd"]) as m:
+            out = stage_court(frame_seq, segments, _config(court_method="neural"))
+        m.assert_called_once_with(tmp_path, segments, method="neural")
+        assert out == ["cd"]
+
+
+class TestStageBall:
+    def test_threads_config_knobs_and_auto_stride(self, tmp_path: Path):
+        frame_seq = _frame_seq(tmp_path, fps=60.0)
+        segments = [_segment(0, 9, 60.0), _segment(100, 109, 60.0)]
+        config = _config(
+            ball_detection_method="tracknet", ball_confidence_threshold=0.42, ball_frame_step="auto",
+            ball_max_speed_px=120.0, ball_max_gap_s=0.4, ball_smooth_window=5,
+            ball_stationary_std_px=3.0, ball_strong_confidence=0.8,
         )
+        progress = []
+        with patch("court_vision.pipeline.build_ball_trajectory", return_value={1: None}) as m:
+            out = stage_ball(frame_seq, segments, config, progress_callback=lambda c, t: progress.append((c, t)))
 
-        mock_build_traj.return_value = BallTrajectory(detections=[], fps=30.0)
-        mock_detect_players.return_value = []
-        mock_estimate_pose.return_value = None
+        assert out == [{1: None}, {1: None}]
+        assert m.call_count == 2
+        first = m.call_args_list[0]
+        assert first.args == (tmp_path, segments[0])
+        kw = first.kwargs
+        assert kw["fps"] == 60.0
+        assert kw["ball_method"] == "tracknet"
+        assert kw["confidence_threshold"] == 0.42
+        assert kw["frame_step"] == 2  # auto at 60 fps
+        assert kw["max_speed_px"] == 120.0
+        assert kw["max_gap_s"] == 0.4
+        assert kw["smooth_window"] == 5
+        assert kw["stationary_std_px"] == 3.0
+        assert kw["strong_confidence"] == 0.8
+        # per-segment progress is offset into a single [0, total] range
+        second_cb = m.call_args_list[1].kwargs["progress_callback"]
+        second_cb(3, 10)
+        assert progress[-1] == (13, 20)
 
-        track_segment(frames_dir, segment, ball_method="hsv")
+    def test_explicit_frame_step(self, tmp_path: Path):
+        frame_seq = _frame_seq(tmp_path, fps=60.0)
+        with patch("court_vision.pipeline.build_ball_trajectory", return_value={}) as m:
+            stage_ball(frame_seq, [_segment(0, 9)], _config(ball_frame_step=3))
+        assert m.call_args.kwargs["frame_step"] == 3
+        assert m.call_args.kwargs["progress_callback"] is None
 
-        call_kwargs = mock_build_traj.call_args
-        assert call_kwargs is not None
-        if call_kwargs.kwargs:
-            assert call_kwargs.kwargs.get("method") == "hsv"
-        else:
-            assert False, "Expected method='hsv' in build_trajectory kwargs"
+    def test_no_segments(self, tmp_path: Path):
+        with patch("court_vision.pipeline.build_ball_trajectory") as m:
+            assert stage_ball(_frame_seq(tmp_path), [], _config()) == []
+        m.assert_not_called()
+
+
+class TestStagePlayers:
+    def test_threads_homography_ball_and_knobs(self, tmp_path: Path):
+        frame_seq = _frame_seq(tmp_path, fps=60.0)
+        segments = [_segment(0, 9, 60.0), _segment(100, 109, 60.0)]
+        H = np.eye(3)
+        court = [CourtDetectionResult(success=True, homography=H), CourtDetectionResult(success=False)]
+        balls = [{0: None}, {100: None}]
+        config = _config(player_model="yolov8n-pose.pt", player_imgsz=960, player_conf=0.2,
+                            player_detect_stride="auto", player_far_crop=False,
+                            player_max_court_x=9.0, player_max_court_y=18.0)
+        t0 = FrameTrackingResult(0, None, [], [])
+        t1 = FrameTrackingResult(100, None, [], [])
+        with patch("court_vision.pipeline.detect_players_segment", side_effect=[[t0], [t1]]) as m:
+            out = stage_players(frame_seq, segments, court, balls, config)
+
+        assert out == [t0, t1]
+        first, second = m.call_args_list
+        assert first.args == (tmp_path, segments[0], balls[0])
+        assert first.kwargs["homography"] is H
+        assert second.args == (tmp_path, segments[1], balls[1])
+        assert second.kwargs["homography"] is None  # failed court detection
+        kw = first.kwargs
+        assert kw["player_detect_stride"] == 2
+        assert kw["model_name"] == "yolov8n-pose.pt"
+        assert kw["imgsz"] == 960
+        assert kw["conf"] == 0.2
+        assert kw["far_crop"] is False
+        assert kw["max_court_x"] == 9.0
+        assert kw["max_court_y"] == 18.0
+
+    def test_missing_court_and_ball_data_are_tolerated(self, tmp_path: Path):
+        frame_seq = _frame_seq(tmp_path)
+        with patch("court_vision.pipeline.detect_players_segment", return_value=[]) as m:
+            stage_players(frame_seq, [_segment(0, 9)], None, [], _config())
+        assert m.call_args.args[2] == {}
+        assert m.call_args.kwargs["homography"] is None
+
+
+class TestStageScoreboard:
+    def test_reads_timeline_with_sample_interval(self, tmp_path: Path):
+        frame_seq = _frame_seq(tmp_path, fps=25.0, total_frames=500)
+        timeline = ScoreTimeline()
+        with patch("court_vision.pipeline.read_scoreboard_timeline", return_value=timeline) as m:
+            assert stage_scoreboard(frame_seq, _config(scoreboard_sample_s=1.5)) is timeline
+        m.assert_called_once_with(tmp_path, 500, 25.0, sample_s=1.5)
+
+
+class TestStageShots:
+    def test_uses_first_successful_homography_and_per_segment_list(self, tmp_path: Path):
+        frame_seq = _frame_seq(tmp_path)
+        segments = [_segment(0, 50), _segment(100, 200)]
+        H1, H2 = np.eye(3), np.eye(3) * 2
+        court = [CourtDetectionResult(success=False, homography=H1), CourtDetectionResult(success=True, homography=H2)]
+        config = _config(contact_method="proximity")
+        timeline = ScoreTimeline()
+        match = MatchData("m", "src", {}, [])
+        with patch("court_vision.pipeline.build_match_data", return_value=match) as m:
+            out = stage_shots("src.mp4", frame_seq, segments, court, [], config, scoreboard=timeline)
+
+        assert out is match
+        kw = m.call_args.kwargs
+        assert kw["source"] == "src.mp4"
+        assert kw["segments"] == segments
+        assert kw["tracking_results"] == []
+        assert kw["fps"] == 30.0
+        assert kw["court_homography"] is H2
+        assert kw["settings"] is config.pipeline
+        assert kw["scoreboard"] is timeline
+        assert kw["segment_homographies"][0] is None
+        assert kw["segment_homographies"][1] is H2
+
+    def test_no_court_detections(self, tmp_path: Path):
+        with patch("court_vision.pipeline.build_match_data", return_value=None) as m:
+            stage_shots("src.mp4", _frame_seq(tmp_path), [], None, [], _config())
+        assert m.call_args.kwargs["court_homography"] is None
+        assert m.call_args.kwargs["segment_homographies"] == []

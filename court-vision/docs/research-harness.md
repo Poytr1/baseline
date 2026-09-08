@@ -125,3 +125,28 @@ precision of our hit detector on an independent broadcast source.
 | `slice_drop_ratio` | 0.3 | racket wrist drop (torso lengths) over the look-back that marks a slice |
 | `outcome_method` | auto | scoreboard OCR first, then ball landing (in/out/net), else unknown |
 | `point_split_gap_s` | 4.0 | gap between hits that starts a new point inside one camera segment |
+
+## Results (2026-09-08)
+
+Scorecards after the rework and the `contacts` sweep (`runs/leaderboard.jsonl`; shot tolerance ±0.5 s):
+
+| clip | points | winner | shots P / R / F1 | FH-BH side | serve P/R | slice P/R | ball coverage |
+|---|---|---|---|---|---|---|---|
+| houston28s (59.94 fps, 2 points, 13 shots) | 2/2 | 2/2 | 1.00 / 1.00 / 1.00 | 9/9 | 1.0 / 1.0 | 1.0 / 0.5 | 0.87 |
+| vienna7s (30 fps, 1 point, 5 shots) | 1/1 | unknown* | 1.00 / 1.00 / 1.00 | 3/3 | – | 0 / 0 | 0.93 |
+
+\* the 7 s clip ends with the ball still in flight after the last hit and the
+scoreboard never updates, so the pipeline reports `winner: null` /
+`outcome_source: unknown` rather than guessing. The two GT "slice" labels in
+vienna7s are forehand-side contacts the wrist-drop rule does not flag.
+
+Starting point before the rework (same GT): houston28s shot F1 0.69, stroke
+accuracy 0.30, side 4/7, winners 1/2; vienna7s F1 0.77, side 2/3.
+
+Court detector on 300 TennisCourtDetector validation images
+(`court-vision research dataset eval-court`):
+
+| method | success | mean kp error | median | ≤5 px | ≤10 px |
+|---|---|---|---|---|---|
+| neural (default) | 300/300 | 3.4 px | 2.6 px | 87% | 97% |
+| classical Hough fallback | 286/300 | 67 px | 64 px | 7% | 12% |

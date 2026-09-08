@@ -8,8 +8,6 @@ stage outputs can be cached on disk and diffed between experiments.
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any
-
 import numpy as np
 
 from court_vision.ball_tracker import BallDetection
@@ -118,11 +116,3 @@ def court_from_dict(d: dict) -> CourtDetectionResult:
         pixel_keypoints=None if d.get("pixel_keypoints") is None else [tuple(p) for p in d["pixel_keypoints"]],
         num_lines_detected=int(d.get("num_lines_detected", 0)),
     )
-
-
-def _json_default(o: Any):
-    if isinstance(o, np.ndarray):
-        return o.tolist()
-    if isinstance(o, (np.floating, np.integer)):
-        return o.item()
-    return str(o)

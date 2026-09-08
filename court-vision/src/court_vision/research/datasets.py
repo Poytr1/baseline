@@ -141,20 +141,20 @@ def fetch_court_subset(
     rng.shuffle(anns)
     img_prefix = next((n for n in names if n.endswith("/images/") or "/images/" in n), "")
     img_dir_in_zip = img_prefix[: img_prefix.index("/images/") + len("/images/")] if "/images/" in img_prefix else "images/"
-    court = []
+    chosen = []
     for a in anns:
-        if len(court) >= n_images:
-            break
         member = f"{img_dir_in_zip}{a['id']}.png"
-        if member not in rz.entries:
-            continue
+        if member in rz.entries and len(a.get("kps") or []) >= 4:
+            chosen.append((a, member))
+        if len(chosen) >= n_images:
+            break
+    _download_many(rz, [(m, images_dir / f"{a['id']}.png") for a, m in chosen
+                        if not (images_dir / f"{a['id']}.png").exists()])
+    court = []
+    for a, member in chosen:
         local = images_dir / f"{a['id']}.png"
         if not local.exists():
-            try:
-                local.write_bytes(rz.read(member))
-            except Exception as e:
-                log(f"[court] skip {member}: {e}")
-                continue
+            continue
         kps = a.get("kps") or []
         if len(kps) < 4:
             continue
@@ -184,11 +184,30 @@ class BallClip:
     labels: list[dict]  # {"frame": int, "file": str, "visible": bool, "x": float|None, "y": float|None, "status": int}
 
 
+def _download_many(rz: "RemoteZip", todo: list[tuple[str, Path]], workers: int = 8) -> int:
+    """Fetch zip members concurrently (each is an independent Range request)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(item: tuple[str, Path]) -> int:
+        name, local = item
+        try:
+            local.write_bytes(rz.read(name))
+            return 1
+        except Exception:
+            return 0
+
+    if not todo:
+        return 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        return sum(ex.map(one, todo))
+
+
 def fetch_ball_subset(
     out_dir: Path = DEFAULT_DIR,
     games: tuple[str, ...] = ("game7",),
     max_clips: int | None = None,
     log=print,
+    workers: int = 8,
 ) -> Path:
     """Fetch whole TrackNet game folders (frames + Label.csv) and write a
     manifest ``ball_clips.json``."""
@@ -211,13 +230,11 @@ def fetch_ball_subset(
             label_local = cdir / "Label.csv"
             if not label_local.exists():
                 label_local.write_bytes(rz.read(label_member))
-            n_written = 0
-            for n in members:
-                if f"/{game}/{clip}/" in n and n.lower().endswith(".jpg"):
-                    local = cdir / Path(n).name
-                    if not local.exists():
-                        local.write_bytes(rz.read(n))
-                        n_written += 1
+            todo = [
+                (n, cdir / Path(n).name) for n in members
+                if f"/{game}/{clip}/" in n and n.lower().endswith(".jpg") and not (cdir / Path(n).name).exists()
+            ]
+            n_written = _download_many(rz, todo, workers=workers)
             rows = list(csv.DictReader(io.StringIO(label_local.read_text())))
             manifest.append({"game": game, "clip": clip, "dir": str(cdir.resolve()), "frames": len(rows)})
             log(f"[ball] {game}/{clip}: {len(rows)} labelled frames ({n_written} downloaded)")

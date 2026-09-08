@@ -13,17 +13,11 @@ def process(
     source: str = typer.Argument(help="YouTube URL or path to a local video file."),
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to court-vision.yaml config file."),
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory for pipeline output."),
-    scene_weights: Optional[Path] = typer.Option(None, "--scene-weights", help="Path to fine-tuned scene filter weights."),
 ) -> None:
     """Process a tennis match video through the CV pipeline."""
     from court_vision.pipeline import run_pipeline
 
-    result = run_pipeline(
-        source=source,
-        config_path=config,
-        output_dir=output_dir,
-        scene_weights_path=scene_weights,
-    )
+    result = run_pipeline(source=source, config_path=config, output_dir=output_dir)
 
     typer.echo(f"Processed {result.total_frames} frames at {result.fps:.1f} FPS")
     typer.echo(f"Found {len(result.gameplay_segments)} gameplay segments ({result.gameplay_frame_count} frames)")
@@ -56,7 +50,6 @@ def preview(
     source: str = typer.Argument(help="YouTube URL or path to a local video file."),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output video path."),
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file."),
-    scene_weights: Optional[Path] = typer.Option(None, "--scene-weights", help="Scene filter weights."),
 ) -> None:
     """Generate a preview video with overlay annotations."""
     import os
@@ -70,11 +63,7 @@ def preview(
     from court_vision.pipeline import run_pipeline
     from court_vision.player_detect import FrameTrackingResult
 
-    result = run_pipeline(
-        source=source,
-        config_path=config,
-        scene_weights_path=scene_weights,
-    )
+    result = run_pipeline(source=source, config_path=config)
 
     # Build frame_index -> tracking lookup
     tracking_by_frame: dict[int, FrameTrackingResult] = {}

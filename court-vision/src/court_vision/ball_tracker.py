@@ -55,9 +55,11 @@ def detect_ball_wasb(
     return _impl(frames, frame_index, **kwargs)
 
 
-_DETECTORS: dict[str, Callable] = {
-    "wasb": detect_ball_wasb,
-    "tracknet": detect_ball_tracknet,
+# Resolved at call time (not import time) so tests can patch the wrappers
+# above on this module.
+_DETECTOR_NAMES: dict[str, str] = {
+    "wasb": "detect_ball_wasb",
+    "tracknet": "detect_ball_tracknet",
 }
 
 
@@ -111,9 +113,9 @@ def detect_ball_sequence(
     """
     frames_dir = Path(frames_dir)
     try:
-        detect_fn = _DETECTORS[method]
+        detect_fn = globals()[_DETECTOR_NAMES[method]]
     except KeyError as e:
-        raise ValueError(f"Unknown ball detection method {method!r}; expected one of {sorted(_DETECTORS)}") from e
+        raise ValueError(f"Unknown ball detection method {method!r}; expected one of {sorted(_DETECTOR_NAMES)}") from e
 
     step = max(1, int(frame_step))
     window = _FrameWindow(frames_dir, capacity=2 * step + 2)
@@ -236,18 +238,17 @@ def reject_velocity_outliers(
     """Reject detections that imply physically impossible ball movement.
 
     Consecutive detections are grouped into *runs* where each step is
-    within ``max_speed_px_per_frame`` (scaled by the frame gap). Short runs
-    (fewer than ``min_run`` detections) are dropped when the detections on
-    either side of them are consistent with each other, i.e. the short run
-    is a blip off the real track (typically 1-2 frames of a false peak on a
-    player's shoe or a line). A short run at the very start/end of the
-    track is dropped only if it is inconsistent with its single neighbour.
+    within ``max_speed_px_per_frame`` (scaled by the frame gap); a step
+    faster than that starts a new run. Runs shorter than ``min_run``
+    detections are dropped: a real ball track is long, while a false peak
+    on a shoe, a logo or a ball kid's ball shows up as one or two frames
+    that do not connect to the track on either side.
 
     Args:
         detections: Sorted raw ball detections (no Nones).
         fps: Video frame rate (unused; kept for API symmetry).
         max_speed_px_per_frame: Maximum allowed displacement per frame in pixels.
-        min_run: Runs shorter than this are candidates for removal.
+        min_run: Runs shorter than this are removed.
 
     Returns:
         Filtered list of detections with outliers removed.
@@ -268,44 +269,9 @@ def reject_velocity_outliers(
         else:
             runs.append([det])
 
-    def speed(a: BallDetection, b: BallDetection) -> float:
-        gap = max(abs(b.frame_index - a.frame_index), 1)
-        return ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5 / gap
-
-    def end_speed(run: list[BallDetection], head: bool) -> float:
-        """Speed at the start (head) or end of a run (px/frame)."""
-        if len(run) < 2:
-            return 0.0
-        a, b = (run[0], run[1]) if head else (run[-2], run[-1])
-        return speed(a, b)
-
-    def consistent(bridge: float, neighbour_speed: float, internal: float | None) -> bool:
-        """A short run continues a neighbour only if bridging it and moving
-        along it look like the same ball: speeds within 3x of the
-        neighbour's (plus a 2 px/frame floor for slow far-court balls)."""
-        ref = max(neighbour_speed, 2.0)
-        if bridge > max_speed_px_per_frame or bridge > 3.0 * ref:
-            return False
-        if internal is not None and internal > 3.0 * ref:
-            return False
-        return True
-
-    keep = [True] * len(runs)
-    for r, run in enumerate(runs):
-        if len(run) >= min_run:
-            continue
-        prev_run = runs[r - 1] if r > 0 else None
-        next_run = runs[r + 1] if r + 1 < len(runs) else None
-        internal = speed(run[0], run[-1]) if len(run) >= 2 else None
-        joins_prev = (prev_run is not None and len(prev_run) >= min_run
-                      and consistent(speed(prev_run[-1], run[0]), end_speed(prev_run, head=False), internal))
-        joins_next = (next_run is not None and len(next_run) >= min_run
-                      and consistent(speed(run[-1], next_run[0]), end_speed(next_run, head=True), internal))
-        keep[r] = joins_prev or joins_next
-
     kept: list[BallDetection] = []
-    for r, run in enumerate(runs):
-        if keep[r]:
+    for run in runs:
+        if len(run) >= min_run:
             kept.extend(run)
     return kept
 
