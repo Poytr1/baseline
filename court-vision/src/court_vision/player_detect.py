@@ -1,5 +1,6 @@
 """Player detection — YOLOv8 person detection, role assignment, and pose estimation."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -45,10 +46,15 @@ class FrameTrackingResult:
 
 @lru_cache(maxsize=1)
 def _get_yolo_model():
-    """Load the YOLOv8n model (cached singleton)."""
+    """Load the YOLOv8n model on GPU if available (cached singleton)."""
     from ultralytics import YOLO
 
-    return YOLO("yolov8n.pt")
+    from court_vision.device import get_device
+
+    model = YOLO("yolov8n.pt")
+    device = get_device()
+    model.to(device)
+    return model
 
 
 def detect_players_in_frame(
@@ -90,7 +96,49 @@ def detect_players_in_frame(
                 confidence=float(confs[i]),
             ))
 
+    frame_width = frame.shape[1]
+    detections = filter_non_players(detections, frame_width)
+
     return detections
+
+
+def filter_non_players(
+    detections: list[PlayerDetection],
+    frame_width: int,
+    min_bbox_area: float = 2500,
+    margin_ratio: float = 0.22,
+) -> list[PlayerDetection]:
+    """Filter out small detections in frame margins (ball caddies, line judges).
+
+    Only rejects detections that are BOTH small (below min_bbox_area) AND
+    positioned in the outer margins of the frame. Detections in the center
+    of the frame are always kept regardless of size.
+
+    Args:
+        detections: Raw player detections from YOLO.
+        frame_width: Width of the video frame in pixels.
+        min_bbox_area: Minimum bbox area for margin detections.
+        margin_ratio: Fraction of frame width considered margin (each side).
+
+    Returns:
+        Filtered list of PlayerDetections.
+    """
+    left_margin = frame_width * margin_ratio
+    right_margin = frame_width * (1 - margin_ratio)
+
+    filtered = []
+    for det in detections:
+        bbox_w = det.bbox[2] - det.bbox[0]
+        bbox_h = det.bbox[3] - det.bbox[1]
+        area = bbox_w * bbox_h
+        center_x = (det.bbox[0] + det.bbox[2]) / 2
+
+        in_margin = center_x < left_margin or center_x > right_margin
+        if in_margin and area < min_bbox_area:
+            continue
+        filtered.append(det)
+
+    return filtered
 
 
 def assign_player_roles(
@@ -268,35 +316,31 @@ def estimate_pose(
     )
 
 
-def track_segment(
+def build_ball_trajectory(
     frames_dir: Path,
     segment: GameplaySegment,
-    homography: np.ndarray | None = None,
     fps: float = 30.0,
     ball_method: str = "tracknet",
-) -> list[FrameTrackingResult]:
-    """Track ball, players, and poses for all frames in a gameplay segment.
-
-    Uses build_trajectory for ball detection (with gap interpolation
-    and stationarity rejection) instead of per-frame detection.
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> dict[int, BallDetection | None]:
+    """Build ball trajectory for a segment, returning per-frame lookup.
 
     Args:
         frames_dir: Directory containing frame_NNNNNN.jpg files.
         segment: Gameplay segment defining frame range.
-        homography: Homography matrix for this segment, or None.
         fps: Video frame rate for trajectory interpolation.
-        ball_method: Ball detection method — "tracknet" or "hsv".
+        ball_method: Ball detection method — "wasb", "tracknet", or "hsv".
+        progress_callback: Callback for ball tracking progress.
 
     Returns:
-        List of FrameTrackingResult, one per successfully read frame.
+        Dict mapping frame_index -> BallDetection (or None).
     """
-    # Build ball trajectory for the whole segment
     trajectory = build_trajectory(
         frames_dir, segment.start_frame, segment.end_frame, fps=fps,
         method=ball_method,
+        progress_callback=progress_callback,
     )
 
-    # Apply stationarity rejection
     raw_dets: list[BallDetection | None] = [None] * (segment.end_frame - segment.start_frame + 1)
     for det in trajectory.detections:
         idx = det.frame_index - segment.start_frame
@@ -305,12 +349,37 @@ def track_segment(
 
     filtered_dets = reject_stationary_detections(raw_dets)
 
-    # Build lookup: frame_index -> filtered ball detection
     ball_by_frame: dict[int, BallDetection | None] = {}
     for i, det in enumerate(filtered_dets):
         ball_by_frame[segment.start_frame + i] = det
 
+    return ball_by_frame
+
+
+def detect_players_segment(
+    frames_dir: Path,
+    segment: GameplaySegment,
+    ball_by_frame: dict[int, BallDetection | None],
+    homography: np.ndarray | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    player_detect_stride: int = 1,
+) -> list[FrameTrackingResult]:
+    """Detect players and poses for all frames in a segment.
+
+    Args:
+        frames_dir: Directory containing frame_NNNNNN.jpg files.
+        segment: Gameplay segment defining frame range.
+        ball_by_frame: Pre-computed ball detections keyed by frame index.
+        homography: Homography matrix for this segment, or None.
+        progress_callback: Callback for player detection progress.
+        player_detect_stride: Run YOLO+pose every N frames, reuse for in-between.
+
+    Returns:
+        List of FrameTrackingResult, one per successfully read frame.
+    """
     results: list[FrameTrackingResult] = []
+    last_players: list[PlayerDetection] = []
+    last_poses: list[PoseKeypoints] = []
 
     for frame_idx in range(segment.start_frame, segment.end_frame + 1):
         frame_path = frames_dir / f"frame_{frame_idx:06d}.jpg"
@@ -318,24 +387,38 @@ def track_segment(
         if frame is None:
             continue
 
-        # Ball from trajectory (already filtered)
         ball = ball_by_frame.get(frame_idx)
 
-        # Player detection + role assignment
-        raw_players = detect_players_in_frame(frame, frame_index=frame_idx)
-        players = assign_player_roles(raw_players)
+        offset = frame_idx - segment.start_frame
+        if offset % player_detect_stride == 0:
+            raw_players = detect_players_in_frame(frame, frame_index=frame_idx)
+            players = assign_player_roles(raw_players)
 
-        # Map players to court coordinates
-        if homography is not None:
+            if homography is not None:
+                for player in players:
+                    player.court_position = map_player_to_court(player, homography)
+
+            poses: list[PoseKeypoints] = []
             for player in players:
-                player.court_position = map_player_to_court(player, homography)
+                pose = estimate_pose(frame, player)
+                if pose is not None:
+                    poses.append(pose)
 
-        # Pose estimation per player
-        poses: list[PoseKeypoints] = []
-        for player in players:
-            pose = estimate_pose(frame, player)
-            if pose is not None:
-                poses.append(pose)
+            last_players = players
+            last_poses = poses
+        else:
+            players = [
+                PlayerDetection(
+                    frame_index=frame_idx, bbox=p.bbox,
+                    confidence=p.confidence, court_position=p.court_position,
+                    role=p.role,
+                )
+                for p in last_players
+            ]
+            poses = [
+                PoseKeypoints(frame_index=frame_idx, role=pk.role, keypoints=pk.keypoints)
+                for pk in last_poses
+            ]
 
         results.append(FrameTrackingResult(
             frame_index=frame_idx,
@@ -343,5 +426,36 @@ def track_segment(
             players=players,
             poses=poses,
         ))
+        if progress_callback:
+            progress_callback(
+                frame_idx - segment.start_frame + 1,
+                segment.end_frame - segment.start_frame + 1,
+            )
 
     return results
+
+
+def track_segment(
+    frames_dir: Path,
+    segment: GameplaySegment,
+    homography: np.ndarray | None = None,
+    fps: float = 30.0,
+    ball_method: str = "tracknet",
+    progress_callback: Callable[[int, int], None] | None = None,
+    ball_progress_callback: Callable[[int, int], None] | None = None,
+    player_detect_stride: int = 1,
+) -> list[FrameTrackingResult]:
+    """Track ball, players, and poses for all frames in a gameplay segment.
+
+    Convenience wrapper that calls build_ball_trajectory then detect_players_segment.
+    """
+    ball_by_frame = build_ball_trajectory(
+        frames_dir, segment, fps=fps, ball_method=ball_method,
+        progress_callback=ball_progress_callback,
+    )
+    return detect_players_segment(
+        frames_dir, segment, ball_by_frame,
+        homography=homography,
+        progress_callback=progress_callback,
+        player_detect_stride=player_detect_stride,
+    )

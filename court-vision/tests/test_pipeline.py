@@ -10,7 +10,8 @@ from court_vision.pipeline import PipelineResult, run_pipeline
 
 class TestRunPipeline:
     @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.track_segment")
+    @patch("court_vision.pipeline.detect_players_segment")
+    @patch("court_vision.pipeline.build_ball_trajectory")
     @patch("court_vision.pipeline.compute_segment_homographies")
     @patch("court_vision.pipeline.extract_frames")
     @patch("court_vision.pipeline.classify_frames")
@@ -27,7 +28,8 @@ class TestRunPipeline:
         mock_classify: MagicMock,
         mock_extract: MagicMock,
         mock_homographies: MagicMock,
-        mock_track: MagicMock,
+        mock_build_ball: MagicMock,
+        mock_detect_players: MagicMock,
         mock_build_match: MagicMock,
         tmp_path: Path,
     ):
@@ -63,7 +65,8 @@ class TestRunPipeline:
             )
         ]
         mock_homographies.return_value = []
-        mock_track.return_value = []
+        mock_build_ball.return_value = {}
+        mock_detect_players.return_value = []
         mock_build_match.return_value = None
 
         result = run_pipeline(str(video_path), config_path=None)
@@ -75,7 +78,8 @@ class TestRunPipeline:
         mock_classify.assert_called_once()
 
     @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.track_segment")
+    @patch("court_vision.pipeline.detect_players_segment")
+    @patch("court_vision.pipeline.build_ball_trajectory")
     @patch("court_vision.pipeline.compute_segment_homographies")
     @patch("court_vision.pipeline.download_video")
     @patch("court_vision.pipeline.extract_frames")
@@ -94,7 +98,8 @@ class TestRunPipeline:
         mock_extract: MagicMock,
         mock_download: MagicMock,
         mock_homographies: MagicMock,
-        mock_track: MagicMock,
+        mock_build_ball: MagicMock,
+        mock_detect_players: MagicMock,
         mock_build_match: MagicMock,
         tmp_path: Path,
     ):
@@ -123,7 +128,8 @@ class TestRunPipeline:
         mock_classify.return_value = []
         mock_filter.return_value = []
         mock_homographies.return_value = []
-        mock_track.return_value = []
+        mock_build_ball.return_value = {}
+        mock_detect_players.return_value = []
         mock_build_match.return_value = None
 
         result = run_pipeline(
@@ -138,7 +144,8 @@ class TestRunPipeline:
 
 class TestRunPipelineWithCourtDetection:
     @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.track_segment")
+    @patch("court_vision.pipeline.detect_players_segment")
+    @patch("court_vision.pipeline.build_ball_trajectory")
     @patch("court_vision.pipeline.compute_segment_homographies")
     @patch("court_vision.pipeline.extract_frames")
     @patch("court_vision.pipeline.classify_frames")
@@ -155,7 +162,8 @@ class TestRunPipelineWithCourtDetection:
         mock_classify: MagicMock,
         mock_extract: MagicMock,
         mock_homographies: MagicMock,
-        mock_track: MagicMock,
+        mock_build_ball: MagicMock,
+        mock_detect_players: MagicMock,
         mock_build_match: MagicMock,
         tmp_path: Path,
     ):
@@ -190,7 +198,8 @@ class TestRunPipelineWithCourtDetection:
 
         court_result = CourtDetectionResult(success=True, homography=MagicMock(), num_lines_detected=6)
         mock_homographies.return_value = [court_result]
-        mock_track.return_value = []
+        mock_build_ball.return_value = {}
+        mock_detect_players.return_value = []
         mock_build_match.return_value = None
 
         result = run_pipeline(str(video_path), config_path=None)
@@ -203,7 +212,8 @@ class TestRunPipelineWithCourtDetection:
 
 class TestRunPipelineWithTracking:
     @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.track_segment")
+    @patch("court_vision.pipeline.detect_players_segment")
+    @patch("court_vision.pipeline.build_ball_trajectory")
     @patch("court_vision.pipeline.compute_segment_homographies")
     @patch("court_vision.pipeline.extract_frames")
     @patch("court_vision.pipeline.classify_frames")
@@ -220,11 +230,12 @@ class TestRunPipelineWithTracking:
         mock_classify: MagicMock,
         mock_extract: MagicMock,
         mock_homographies: MagicMock,
-        mock_track: MagicMock,
+        mock_build_ball: MagicMock,
+        mock_detect_players: MagicMock,
         mock_build_match: MagicMock,
         tmp_path: Path,
     ):
-        """Pipeline calls track_segment after court detection."""
+        """Pipeline calls build_ball_trajectory and detect_players_segment after court detection."""
         import torch
 
         from court_vision.config import PipelineConfig, PipelineSettings
@@ -257,21 +268,24 @@ class TestRunPipelineWithTracking:
         court_result = CourtDetectionResult(success=True, num_lines_detected=6)
         mock_homographies.return_value = [court_result]
 
-        mock_track.return_value = [
+        mock_build_ball.return_value = {}
+        mock_detect_players.return_value = [
             FrameTrackingResult(frame_index=0, ball=None, players=[], poses=[]),
         ]
         mock_build_match.return_value = None
 
         result = run_pipeline(str(video_path), config_path=None)
 
-        mock_track.assert_called_once()
+        mock_build_ball.assert_called_once()
+        mock_detect_players.assert_called_once()
         assert result.tracking_results is not None
         assert len(result.tracking_results) == 1
 
 
 class TestRunPipelineWithShotClassification:
     @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.track_segment")
+    @patch("court_vision.pipeline.detect_players_segment")
+    @patch("court_vision.pipeline.build_ball_trajectory")
     @patch("court_vision.pipeline.compute_segment_homographies")
     @patch("court_vision.pipeline.extract_frames")
     @patch("court_vision.pipeline.classify_frames")
@@ -288,7 +302,8 @@ class TestRunPipelineWithShotClassification:
         mock_classify: MagicMock,
         mock_extract: MagicMock,
         mock_homographies: MagicMock,
-        mock_track: MagicMock,
+        mock_build_ball: MagicMock,
+        mock_detect_players: MagicMock,
         mock_build_match: MagicMock,
         tmp_path: Path,
     ):
@@ -320,7 +335,8 @@ class TestRunPipelineWithShotClassification:
         ]
         mock_filter.return_value = segments
         mock_homographies.return_value = [CourtDetectionResult(success=True, num_lines_detected=6)]
-        mock_track.return_value = []
+        mock_build_ball.return_value = {}
+        mock_detect_players.return_value = []
         mock_build_match.return_value = MatchData(
             match_id="test", source_url="test.mp4",
             metadata={}, points=[],
@@ -334,7 +350,8 @@ class TestRunPipelineWithShotClassification:
 
 class TestRunPipelineWithHeuristicFilter:
     @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.track_segment")
+    @patch("court_vision.pipeline.detect_players_segment")
+    @patch("court_vision.pipeline.build_ball_trajectory")
     @patch("court_vision.pipeline.compute_segment_homographies")
     @patch("court_vision.pipeline.extract_frames")
     @patch("court_vision.pipeline.filter_gameplay_segments")
@@ -349,7 +366,8 @@ class TestRunPipelineWithHeuristicFilter:
         mock_filter: MagicMock,
         mock_extract: MagicMock,
         mock_homographies: MagicMock,
-        mock_track: MagicMock,
+        mock_build_ball: MagicMock,
+        mock_detect_players: MagicMock,
         mock_build_match: MagicMock,
         tmp_path: Path,
     ):
@@ -372,7 +390,8 @@ class TestRunPipelineWithHeuristicFilter:
         )
         mock_filter.return_value = []
         mock_homographies.return_value = []
-        mock_track.return_value = []
+        mock_build_ball.return_value = {}
+        mock_detect_players.return_value = []
         mock_build_match.return_value = None
 
         with patch("court_vision.heuristic_scene_filter.classify_frames_heuristic", return_value=[]) as mock_heuristic, \
@@ -437,7 +456,8 @@ class TestTrackSegmentUsesBuildTrajectory:
 
 class TestPipelinePassesHomography:
     @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.track_segment")
+    @patch("court_vision.pipeline.detect_players_segment")
+    @patch("court_vision.pipeline.build_ball_trajectory")
     @patch("court_vision.pipeline.compute_segment_homographies")
     @patch("court_vision.pipeline.extract_frames")
     @patch("court_vision.pipeline.filter_gameplay_segments")
@@ -452,7 +472,8 @@ class TestPipelinePassesHomography:
         mock_filter: MagicMock,
         mock_extract: MagicMock,
         mock_homographies: MagicMock,
-        mock_track: MagicMock,
+        mock_build_ball: MagicMock,
+        mock_detect_players: MagicMock,
         mock_build_match: MagicMock,
         tmp_path: Path,
     ):
@@ -487,7 +508,8 @@ class TestPipelinePassesHomography:
         mock_homographies.return_value = [
             CourtDetectionResult(success=True, homography=fake_H, num_lines_detected=6),
         ]
-        mock_track.return_value = []
+        mock_build_ball.return_value = {}
+        mock_detect_players.return_value = []
         mock_build_match.return_value = None
 
         with patch("court_vision.pipeline.classify_frames", return_value=mock_classify_result):
@@ -509,14 +531,15 @@ class TestPipelinePassesHomography:
 
 class TestPipelineThreadsBallMethod:
     @patch("court_vision.pipeline.build_match_data")
-    @patch("court_vision.pipeline.track_segment")
+    @patch("court_vision.pipeline.detect_players_segment")
+    @patch("court_vision.pipeline.build_ball_trajectory")
     @patch("court_vision.pipeline.compute_segment_homographies")
     @patch("court_vision.pipeline.extract_frames")
     @patch("court_vision.pipeline.filter_gameplay_segments")
     @patch("court_vision.pipeline.load_scene_model")
     @patch("court_vision.pipeline.get_device")
     @patch("court_vision.pipeline.load_config")
-    def test_ball_detection_method_threaded_to_track_segment(
+    def test_ball_detection_method_threaded_to_build_ball_trajectory(
         self,
         mock_load_config: MagicMock,
         mock_get_device: MagicMock,
@@ -524,11 +547,12 @@ class TestPipelineThreadsBallMethod:
         mock_filter: MagicMock,
         mock_extract: MagicMock,
         mock_homographies: MagicMock,
-        mock_track: MagicMock,
+        mock_build_ball: MagicMock,
+        mock_detect_players: MagicMock,
         mock_build_match: MagicMock,
         tmp_path: Path,
     ):
-        """ball_detection_method from config is passed to track_segment."""
+        """ball_detection_method from config is passed to build_ball_trajectory."""
         import torch
 
         from court_vision.config import PipelineConfig, PipelineSettings
@@ -560,20 +584,20 @@ class TestPipelineThreadsBallMethod:
             ),
         ]
         mock_homographies.return_value = []
-        mock_track.return_value = []
+        mock_build_ball.return_value = {}
+        mock_detect_players.return_value = []
         mock_build_match.return_value = None
 
         with patch("court_vision.pipeline.classify_frames", return_value=[]):
             run_pipeline(str(video_path), config_path=None)
 
-        # Verify track_segment was called with ball_method="hsv"
-        call_kwargs = mock_track.call_args
+        # Verify build_ball_trajectory was called with ball_method="hsv"
+        call_kwargs = mock_build_ball.call_args
         assert call_kwargs is not None
         if call_kwargs.kwargs:
             assert call_kwargs.kwargs.get("ball_method") == "hsv"
         else:
-            # ball_method is the 5th positional arg
-            assert call_kwargs.args[4] == "hsv"
+            assert False, "Expected ball_method='hsv' in build_ball_trajectory kwargs"
 
 
 class TestTrackSegmentThreadsBallMethod:

@@ -1,0 +1,2 @@
+pipeline:
+  ball_detection_method: wasb

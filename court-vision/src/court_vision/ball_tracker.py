@@ -1,5 +1,6 @@
 """Ball tracking — detection, trajectory building, and court coordinate mapping."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import cv2
@@ -17,6 +18,73 @@ class BallDetection:
     interpolated: bool = False
 
 
+def _find_ball_candidates(
+    mask: np.ndarray,
+    frame_index: int,
+    min_radius: int,
+    max_radius: int,
+) -> list[tuple[BallDetection, float]]:
+    """Find ball candidates from a binary mask.
+
+    Returns list of (BallDetection, score) tuples sorted by score descending.
+    """
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    cleaned = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
+
+    contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    candidates: list[tuple[BallDetection, float]] = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < np.pi * min_radius**2 or area > np.pi * max_radius**2:
+            continue
+
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter == 0:
+            continue
+        circularity = 4 * np.pi * area / (perimeter * perimeter)
+        if circularity < 0.5:
+            continue
+
+        (cx, cy), radius = cv2.minEnclosingCircle(contour)
+        if radius < min_radius or radius > max_radius:
+            continue
+
+        score = circularity * (1.0 / (1.0 + radius / max_radius))
+        det = BallDetection(
+            frame_index=frame_index,
+            x=float(cx),
+            y=float(cy),
+            confidence=float(min(circularity, 1.0)),
+        )
+        candidates.append((det, score))
+
+    candidates.sort(key=lambda c: c[1], reverse=True)
+    return candidates
+
+
+def _on_court_surface(hsv: np.ndarray, cx: float, cy: float, radius: float = 10.0) -> bool:
+    """Check if a point sits on court-colored pixels (green, blue, or clay)."""
+    h, w = hsv.shape[:2]
+    r = int(radius)
+    x0 = max(0, int(cx) - r)
+    y0 = max(0, int(cy) - r)
+    x1 = min(w, int(cx) + r)
+    y1 = min(h, int(cy) + r)
+    patch = hsv[y0:y1, x0:x1]
+    if patch.size == 0:
+        return False
+
+    green = cv2.inRange(patch, (35, 40, 40), (85, 255, 255))
+    blue = cv2.inRange(patch, (90, 50, 40), (130, 255, 255))
+    red_clay = cv2.inRange(patch, (0, 50, 50), (10, 255, 255))
+    orange_clay = cv2.inRange(patch, (10, 50, 50), (25, 255, 255))
+    court = cv2.bitwise_or(green, cv2.bitwise_or(blue, cv2.bitwise_or(red_clay, orange_clay)))
+    ratio = np.count_nonzero(court) / court.size
+    return ratio > 0.4
+
+
 def detect_ball_in_frame(
     frame: np.ndarray,
     frame_index: int = 0,
@@ -26,8 +94,10 @@ def detect_ball_in_frame(
 ) -> BallDetection | None:
     """Detect the tennis ball in a single frame using color + shape filtering.
 
-    Looks for small, bright, circular objects (white or yellow) that match
-    typical tennis ball appearance in broadcast video.
+    Uses a two-stage approach: first tries to detect via yellow/green ball
+    color (high precision), then falls back to white detection only if no
+    yellow candidate is found. White candidates sitting on court-colored
+    surfaces (court lines) are rejected.
 
     Args:
         frame: BGR image as numpy array (H, W, 3).
@@ -41,59 +111,26 @@ def detect_ball_in_frame(
     """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-    # Mask 1: bright yellow (tennis ball)
-    yellow_mask = cv2.inRange(hsv, (20, 80, 180), (40, 255, 255))
+    # Stage 1: yellow/green ball color (high precision)
+    yellow_mask = cv2.inRange(hsv, (20, 60, 150), (45, 255, 255))
+    yellow_candidates = _find_ball_candidates(yellow_mask, frame_index, min_radius, max_radius)
 
-    # Mask 2: bright white (can appear white under broadcast lighting)
-    white_mask = cv2.inRange(hsv, (0, 0, 200), (180, 60, 255))
+    if yellow_candidates:
+        best = yellow_candidates[0][0]
+        if best.confidence >= min_confidence:
+            return best
 
-    combined = cv2.bitwise_or(yellow_mask, white_mask)
+    # Stage 2: white fallback — tighter mask, reject candidates on court surface
+    white_mask = cv2.inRange(hsv, (0, 0, 220), (180, 40, 255))
+    white_candidates = _find_ball_candidates(white_mask, frame_index, min_radius, max_radius)
 
-    # Morphological cleanup
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
-    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel)
-
-    # Find contours
-    contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    best_detection: BallDetection | None = None
-    best_score = 0.0
-
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area < np.pi * min_radius**2 or area > np.pi * max_radius**2:
+    for det, _score in white_candidates:
+        if _on_court_surface(hsv, det.x, det.y):
             continue
+        if det.confidence >= min_confidence:
+            return det
 
-        # Check circularity
-        perimeter = cv2.arcLength(contour, True)
-        if perimeter == 0:
-            continue
-        circularity = 4 * np.pi * area / (perimeter * perimeter)
-        if circularity < 0.5:
-            continue
-
-        # Get center via minimum enclosing circle
-        (cx, cy), radius = cv2.minEnclosingCircle(contour)
-
-        if radius < min_radius or radius > max_radius:
-            continue
-
-        # Score: higher circularity and smaller size (balls are small) score better
-        score = circularity * (1.0 / (1.0 + radius / max_radius))
-
-        if score > best_score:
-            best_score = score
-            best_detection = BallDetection(
-                frame_index=frame_index,
-                x=float(cx),
-                y=float(cy),
-                confidence=float(min(circularity, 1.0)),
-            )
-
-    if best_detection is not None and best_detection.confidence < min_confidence:
-        return None
-    return best_detection
+    return None
 
 
 @dataclass
@@ -127,6 +164,19 @@ def detect_ball_tracknet(
     return _impl(frames, frame_index, **kwargs)
 
 
+def detect_ball_wasb(
+    frames: "list[np.ndarray]",
+    frame_index: int,
+    **kwargs,
+) -> "BallDetection | None":
+    """Thin wrapper that lazily imports and delegates to wasb.detect_ball_wasb.
+
+    Mirrors :func:`detect_ball_tracknet` so tests can patch this symbol.
+    """
+    from court_vision.wasb import detect_ball_wasb as _impl
+    return _impl(frames, frame_index, **kwargs)
+
+
 def build_trajectory(
     frames_dir: "Path",
     start_frame: int,
@@ -134,6 +184,7 @@ def build_trajectory(
     fps: float,
     max_gap_s: float = 0.5,
     method: str = "tracknet",
+    progress_callback: "Callable[[int, int], None] | None" = None,
 ) -> BallTrajectory:
     """Build a ball trajectory by detecting the ball in each frame.
 
@@ -143,8 +194,9 @@ def build_trajectory(
         end_frame: Last frame index to process (inclusive).
         fps: Video frame rate.
         max_gap_s: Maximum gap in seconds to interpolate through.
-        method: Detection method — "tracknet" (3-frame sliding window)
-                or "hsv" (per-frame color+contour).
+        method: Detection method — "wasb" (HRNet heatmap, recommended),
+                "tracknet" (3-frame sliding window), or "hsv" (per-frame
+                color+contour).
 
     Returns:
         BallTrajectory with detections and interpolated positions.
@@ -154,7 +206,8 @@ def build_trajectory(
     frames_dir = Path(frames_dir)
     raw_detections: list[BallDetection] = []
 
-    if method == "tracknet":
+    if method in ("tracknet", "wasb"):
+        detect_fn = detect_ball_wasb if method == "wasb" else detect_ball_tracknet
         # Read all frames into memory for sliding window
         frames_cache: dict[int, np.ndarray] = {}
         for i in range(start_frame, end_frame + 1):
@@ -176,9 +229,11 @@ def build_trajectory(
             frame_minus1 = frames_cache.get(i - 1, black) if i - 1 >= start_frame else black
 
             buffer = [frame_minus2, frame_minus1, current]
-            det = detect_ball_tracknet(buffer, frame_index=i)
+            det = detect_fn(buffer, frame_index=i)
             if det is not None:
                 raw_detections.append(det)
+            if progress_callback:
+                progress_callback(i - start_frame + 1, end_frame - start_frame + 1)
     else:
         # HSV method: per-frame detection
         for i in range(start_frame, end_frame + 1):
@@ -189,11 +244,49 @@ def build_trajectory(
             det = detect_ball_in_frame(frame, frame_index=i)
             if det is not None:
                 raw_detections.append(det)
+            if progress_callback:
+                progress_callback(i - start_frame + 1, end_frame - start_frame + 1)
 
-    interpolated = interpolate_gaps(raw_detections, fps, max_gap_s)
+    filtered = reject_velocity_outliers(raw_detections, fps)
+    interpolated = interpolate_gaps(filtered, fps, max_gap_s)
     smoothed = smooth_trajectory(interpolated, window=3)
 
     return BallTrajectory(detections=smoothed, fps=fps)
+
+
+def reject_velocity_outliers(
+    detections: list[BallDetection],
+    fps: float,
+    max_speed_px_per_frame: float = 150.0,
+) -> list[BallDetection]:
+    """Reject detections that imply physically impossible ball movement.
+
+    Walks through consecutive detections and drops any whose distance
+    from both the previous and next accepted detection exceeds
+    max_speed_px_per_frame (scaled by the frame gap). This eliminates
+    random false positives that jump across the screen.
+
+    Args:
+        detections: Sorted raw ball detections (no Nones).
+        fps: Video frame rate.
+        max_speed_px_per_frame: Maximum allowed displacement per frame in pixels.
+
+    Returns:
+        Filtered list of detections with outliers removed.
+    """
+    if len(detections) < 2:
+        return list(detections)
+
+    kept: list[BallDetection] = [detections[0]]
+
+    for det in detections[1:]:
+        prev = kept[-1]
+        frame_gap = max(det.frame_index - prev.frame_index, 1)
+        dist = ((det.x - prev.x) ** 2 + (det.y - prev.y) ** 2) ** 0.5
+        if dist <= max_speed_px_per_frame * frame_gap:
+            kept.append(det)
+
+    return kept
 
 
 def interpolate_gaps(

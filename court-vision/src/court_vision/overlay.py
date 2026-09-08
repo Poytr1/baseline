@@ -36,8 +36,33 @@ SKELETON_LINKS = [
 ]
 
 
+BALL_OVERLAY_MIN_CONFIDENCE = 0.75
+BALL_WEAK_NEIGHBOR_WINDOW = 5
+
+
+def _is_strong_ball(ball: BallDetection | None) -> bool:
+    return (
+        ball is not None
+        and not ball.interpolated
+        and ball.confidence >= BALL_OVERLAY_MIN_CONFIDENCE
+    )
+
+
+def compute_strong_ball_frames(
+    tracking_results: list[FrameTrackingResult],
+) -> set[int]:
+    """Frame indices with a strong ball detection (non-interpolated, high-conf)."""
+    return {t.frame_index for t in tracking_results if _is_strong_ball(t.ball)}
+
+
 def draw_ball(frame: np.ndarray, ball: BallDetection) -> np.ndarray:
     """Draw a circle at the ball position.
+
+    High-confidence real detections (≥ BALL_OVERLAY_MIN_CONFIDENCE, not
+    interpolated) render as a bold yellow filled circle. Lower-confidence
+    or interpolated detections render as a smaller, hollow, dimmer circle
+    so the viewer can see what the tracker knows without the "phantom
+    arc" look of an equally-bold overlay everywhere.
 
     Args:
         frame: BGR image (H, W, 3).
@@ -48,8 +73,16 @@ def draw_ball(frame: np.ndarray, ball: BallDetection) -> np.ndarray:
     """
     out = frame.copy()
     center = (int(ball.x), int(ball.y))
-    cv2.circle(out, center, 8, BALL_COLOR, -1)
-    cv2.circle(out, center, 10, BALL_COLOR, 2)
+    strong = (not ball.interpolated) and ball.confidence >= BALL_OVERLAY_MIN_CONFIDENCE
+    if strong:
+        cv2.circle(out, center, 8, BALL_COLOR, -1)
+        cv2.circle(out, center, 10, BALL_COLOR, 2)
+    else:
+        # Interpolated or low-confidence: magenta hollow ring — visible
+        # against court green/blue without looking like a confirmed detection.
+        weak_color = (255, 0, 255)  # magenta (BGR)
+        cv2.circle(out, center, 10, weak_color, 2)
+        cv2.circle(out, center, 3, weak_color, -1)
     return out
 
 
@@ -167,6 +200,7 @@ def render_overlay(
     frame: np.ndarray,
     tracking: FrameTrackingResult,
     homography: np.ndarray | None = None,
+    strong_ball_frames: set[int] | None = None,
 ) -> np.ndarray:
     """Render all overlays for a single frame.
 
@@ -175,15 +209,30 @@ def render_overlay(
     Args:
         frame: BGR image (H, W, 3).
         tracking: Per-frame tracking data.
-        homography: 3x3 pixel-to-court homography for court line overlay.
-
-    Returns:
-        Copy of frame with all overlays drawn.
+        homography: Court homography (pixel -> meters).
+        strong_ball_frames: Set of frame indices that have a high-
+            confidence real ball detection. When provided, weak or
+            interpolated detections are only rendered if there is a
+            strong detection within BALL_WEAK_NEIGHBOR_WINDOW frames —
+            this suppresses phantom detections between points while
+            keeping uncertain-but-real mid-rally / impact detections.
+            When None, all detections render.
     """
     out = frame.copy()
     out = draw_court(out, homography)
-    if tracking.ball is not None:
-        out = draw_ball(out, tracking.ball)
+    ball = tracking.ball
+    if ball is not None:
+        if _is_strong_ball(ball) or strong_ball_frames is None:
+            out = draw_ball(out, ball)
+        else:
+            idx = tracking.frame_index
+            has_strong_neighbor = any(
+                (idx + k) in strong_ball_frames
+                for k in range(-BALL_WEAK_NEIGHBOR_WINDOW, BALL_WEAK_NEIGHBOR_WINDOW + 1)
+                if k != 0
+            )
+            if has_strong_neighbor:
+                out = draw_ball(out, ball)
     if tracking.players:
         out = draw_players(out, tracking.players)
     if tracking.poses:

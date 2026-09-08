@@ -1,5 +1,6 @@
 """Scene filter — classify video frames as gameplay or non-gameplay."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -123,6 +124,8 @@ def classify_frames(
     total_frames: int,
     model: nn.Module,
     device: torch.device,
+    progress_callback: Callable[[int, int], None] | None = None,
+    stride: int = 1,
 ) -> list[SceneFilterResult]:
     """Classify all frames in a directory.
 
@@ -131,20 +134,36 @@ def classify_frames(
         total_frames: Number of frames to process.
         model: Loaded scene classification model.
         device: Torch device for inference.
+        progress_callback: Optional (current, total) callback for progress.
+        stride: Classify every Nth frame; intermediate frames inherit the label.
 
     Returns:
         List of SceneFilterResult, one per frame.
     """
-    results = []
-    for i in range(total_frames):
+    sampled: dict[int, SceneFilterResult] = {}
+    for i in range(0, total_frames, stride):
         frame_path = frames_dir / f"frame_{i:06d}.jpg"
         frame = cv2.imread(str(frame_path))
         if frame is None:
             continue
 
         result = classify_frame(frame, model, device, frame_index=i)
-        results.append(result)
+        sampled[i] = result
+        if progress_callback:
+            progress_callback(min(i + stride, total_frames), total_frames)
 
+    # Fill all frames by propagating nearest sampled result
+    results: list[SceneFilterResult] = []
+    last_result: SceneFilterResult | None = None
+    for i in range(total_frames):
+        if i in sampled:
+            last_result = sampled[i]
+        if last_result is not None:
+            results.append(SceneFilterResult(
+                frame_index=i,
+                category=last_result.category,
+                confidence=last_result.confidence,
+            ))
     return results
 
 

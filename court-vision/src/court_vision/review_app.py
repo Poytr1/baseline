@@ -10,11 +10,12 @@ import streamlit as st
 from court_vision.overlay import render_overlay
 from court_vision.player_detect import FrameTrackingResult
 from court_vision.review_data import load_match_json, save_match_json
-from court_vision.shot_classify import MatchData
+from court_vision.shot_classify import MatchData, Shot
 
 CONFIDENCE_THRESHOLD = 0.7
 STROKE_OPTIONS = ["forehand", "backhand", "serve", "volley", "overhead", "slice"]
 OUTCOME_OPTIONS = ["winner", "error", "unforced_error"]
+PLAYER_OPTIONS = ["near_player", "far_player"]
 STATUS_OPTIONS = ["pending", "approved", "corrected"]
 STATUS_COLORS = {
     "pending": "#FFA500",
@@ -174,9 +175,15 @@ def run_app() -> None:
     tracking_data: dict[int, FrameTrackingResult] = st.session_state.get("tracking", {})
 
     if f_dir and Path(f_dir).exists():
+        # Apply pending "go to frame" request by pre-setting the slider key
+        slider_key = f"frame_slider_{selected_idx}"
+        goto_key = f"goto_frame_{selected_idx}"
+        if goto_key in st.session_state:
+            st.session_state[slider_key] = st.session_state.pop(goto_key)
+
         frame_num = st.slider(
             "Frame", min_value=point.start_frame, max_value=point.end_frame,
-            value=point.start_frame, key=f"frame_slider_{selected_idx}",
+            value=point.start_frame, key=slider_key,
         )
 
         frame_img = get_frame_image(Path(f_dir), frame_num)
@@ -195,11 +202,53 @@ def run_app() -> None:
     # --- Shot Editor ---
     st.subheader("Shots")
 
+    # Handle pending deletions from previous run
+    delete_key = f"delete_shot_{selected_idx}"
+    if delete_key in st.session_state:
+        del_idx = st.session_state.pop(delete_key)
+        if 0 <= del_idx < len(point.shots):
+            point.shots.pop(del_idx)
+            # Renumber remaining shots
+            for k, s in enumerate(point.shots):
+                s.shot_number = k + 1
+            point.rally_length = len(point.shots)
+            if point.review_status == "pending":
+                point.review_status = "corrected"
+            st.rerun()
+
+    # Handle pending additions from previous run
+    add_key = f"add_shot_{selected_idx}"
+    if add_key in st.session_state:
+        new_shot_data = st.session_state.pop(add_key)
+        new_shot = Shot(
+            shot_number=len(point.shots) + 1,
+            frame=new_shot_data["frame"],
+            time_s=new_shot_data["time_s"],
+            player=new_shot_data["player"],
+            stroke=new_shot_data["stroke"],
+            placement=None,
+            confidence=1.0,
+        )
+        # Insert in frame order
+        insert_idx = len(point.shots)
+        for k, s in enumerate(point.shots):
+            if s.frame > new_shot.frame:
+                insert_idx = k
+                break
+        point.shots.insert(insert_idx, new_shot)
+        # Renumber all shots
+        for k, s in enumerate(point.shots):
+            s.shot_number = k + 1
+        point.rally_length = len(point.shots)
+        if point.review_status == "pending":
+            point.review_status = "corrected"
+        st.rerun()
+
     changed = False
     for j, shot in enumerate(point.shots):
         with st.expander(f"Shot {shot.shot_number}: {shot.stroke} by {shot.player} "
                          f"(conf: {shot.confidence:.2f})", expanded=True):
-            col_stroke, col_outcome = st.columns(2)
+            col_stroke, col_player, col_delete = st.columns([3, 3, 1])
             with col_stroke:
                 new_stroke = st.selectbox(
                     "Stroke", STROKE_OPTIONS,
@@ -210,7 +259,24 @@ def run_app() -> None:
                     shot.stroke = new_stroke
                     changed = True
 
-            with col_outcome:
+            with col_player:
+                new_player = st.selectbox(
+                    "Player", PLAYER_OPTIONS,
+                    index=PLAYER_OPTIONS.index(shot.player) if shot.player in PLAYER_OPTIONS else 0,
+                    key=f"player_{selected_idx}_{j}",
+                )
+                if new_player != shot.player:
+                    shot.player = new_player
+                    changed = True
+
+            with col_delete:
+                st.write("")  # spacing
+                if st.button("Delete", key=f"del_{selected_idx}_{j}", type="secondary"):
+                    st.session_state[delete_key] = j
+                    st.rerun()
+
+            col_outcome_area, col_goto = st.columns([3, 2])
+            with col_outcome_area:
                 if j == len(point.shots) - 1:  # Last shot determines outcome
                     current_outcome = point.outcome or "winner"
                     new_outcome = st.selectbox(
@@ -222,13 +288,35 @@ def run_app() -> None:
                         point.outcome = new_outcome
                         changed = True
 
-            if shot.placement:
-                st.caption(f"Placement: ({shot.placement.x:.1f}, {shot.placement.y:.1f}) — {shot.placement.zone}")
+            with col_goto:
+                if shot.placement:
+                    st.caption(f"Placement: {shot.placement.zone}")
+                # Jump to contact frame
+                if st.button(f"Go to frame {shot.frame}", key=f"goto_{selected_idx}_{j}"):
+                    st.session_state[f"goto_frame_{selected_idx}"] = shot.frame
+                    st.rerun()
 
-            # Jump to contact frame
-            if st.button(f"Go to frame {shot.frame}", key=f"goto_{selected_idx}_{j}"):
-                st.session_state[f"frame_slider_{selected_idx}"] = shot.frame
-                st.rerun()
+    # --- Add Shot ---
+    st.divider()
+    st.subheader("Add Shot")
+    st.caption("Navigate to the contact frame using the slider above, then add a shot at that frame.")
+    add_col1, add_col2, add_col3 = st.columns([2, 2, 1])
+    with add_col1:
+        add_stroke = st.selectbox("Stroke", STROKE_OPTIONS, key=f"add_stroke_{selected_idx}")
+    with add_col2:
+        add_player = st.selectbox("Player", PLAYER_OPTIONS, key=f"add_player_{selected_idx}")
+    with add_col3:
+        st.write("")  # spacing
+        current_frame = st.session_state.get(f"frame_slider_{selected_idx}", point.start_frame)
+        if st.button(f"Add at frame {current_frame}", key=f"add_btn_{selected_idx}"):
+            fps = 30.0  # default
+            st.session_state[add_key] = {
+                "frame": current_frame,
+                "time_s": current_frame / fps,
+                "player": add_player,
+                "stroke": add_stroke,
+            }
+            st.rerun()
 
     # Review status
     st.subheader("Review Status")

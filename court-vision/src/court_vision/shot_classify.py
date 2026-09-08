@@ -202,7 +202,7 @@ def detect_contacts(
     tracking_results: list[FrameTrackingResult],
     fps: float,
     proximity_threshold: float = 100.0,
-    min_frames_between_contacts: int = 5,
+    min_frames_between_contacts: int = 10,
 ) -> list[tuple[int, str]]:
     """Detect frames where the ball contacts a player's racket.
 

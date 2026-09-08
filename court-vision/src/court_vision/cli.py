@@ -12,6 +12,7 @@ app = typer.Typer(name="court-vision", help="Automated shot-by-shot tennis data 
 def process(
     source: str = typer.Argument(help="YouTube URL or path to a local video file."),
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to court-vision.yaml config file."),
+    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory for pipeline output."),
     scene_weights: Optional[Path] = typer.Option(None, "--scene-weights", help="Path to fine-tuned scene filter weights."),
 ) -> None:
     """Process a tennis match video through the CV pipeline."""
@@ -20,6 +21,7 @@ def process(
     result = run_pipeline(
         source=source,
         config_path=config,
+        output_dir=output_dir,
         scene_weights_path=scene_weights,
     )
 
@@ -43,6 +45,11 @@ def process(
         total_shots = sum(len(p.shots) for p in result.match_data.points)
         typer.echo(f"Shot classification: {len(result.match_data.points)} points, {total_shots} shots detected")
 
+        from court_vision.export import export_json
+        match_json_path = Path(result.frames_dir).parent / "match_data.json"
+        export_json(result.match_data, match_json_path)
+        typer.echo(f"Match data saved to {match_json_path}")
+
 
 @app.command()
 def preview(
@@ -59,7 +66,7 @@ def preview(
     import cv2
     import numpy as np
 
-    from court_vision.overlay import render_overlay
+    from court_vision.overlay import compute_strong_ball_frames, render_overlay
     from court_vision.pipeline import run_pipeline
     from court_vision.player_detect import FrameTrackingResult
 
@@ -75,6 +82,8 @@ def preview(
         for t in result.tracking_results:
             tracking_by_frame[t.frame_index] = t
 
+    strong_ball_frames = compute_strong_ball_frames(result.tracking_results or [])
+
     # Extract best court homography (first successful detection)
     court_homography: np.ndarray | None = None
     if result.court_detections:
@@ -88,8 +97,17 @@ def preview(
         source_path = Path(source)
         output = source_path.parent / f"{source_path.stem}_preview.mp4"
 
-    # Collect and sort frame files
-    frame_files = sorted(result.frames_dir.glob("frame_*.jpg"))
+    # Collect gameplay frame indices from segments
+    gameplay_frames: set[int] = set()
+    for seg in result.gameplay_segments:
+        for i in range(seg.start_frame, seg.end_frame + 1):
+            gameplay_frames.add(i)
+
+    # Collect and sort frame files, filtered to gameplay only
+    frame_files = [
+        f for f in sorted(result.frames_dir.glob("frame_*.jpg"))
+        if int(f.stem.split("_")[1]) in gameplay_frames
+    ]
     if not frame_files:
         typer.echo("No frames found to render.", err=True)
         raise typer.Exit(1)
@@ -105,21 +123,29 @@ def preview(
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(tmp_path, fourcc, result.fps, (w, h))
 
-    for frame_file in frame_files:
-        frame = cv2.imread(str(frame_file))
-        if frame is None:
-            continue
+    from court_vision.progress import create_progress
 
-        # Extract frame index from filename (frame_NNNNNN.jpg)
-        frame_index = int(frame_file.stem.split("_")[1])
+    with create_progress() as render_progress:
+        render_task = render_progress.add_task("Rendering preview", total=len(frame_files))
+        for frame_file in frame_files:
+            frame = cv2.imread(str(frame_file))
+            if frame is None:
+                continue
 
-        tracking = tracking_by_frame.get(
-            frame_index,
-            FrameTrackingResult(frame_index=frame_index, ball=None, players=[], poses=[]),
-        )
+            # Extract frame index from filename (frame_NNNNNN.jpg)
+            frame_index = int(frame_file.stem.split("_")[1])
 
-        overlay_frame = render_overlay(frame, tracking, homography=court_homography)
-        writer.write(overlay_frame)
+            tracking = tracking_by_frame.get(
+                frame_index,
+                FrameTrackingResult(frame_index=frame_index, ball=None, players=[], poses=[]),
+            )
+
+            overlay_frame = render_overlay(
+                frame, tracking, homography=court_homography,
+                strong_ball_frames=strong_ball_frames,
+            )
+            writer.write(overlay_frame)
+            render_progress.advance(render_task)
 
     writer.release()
 
@@ -171,6 +197,52 @@ def export(
         export_json(match, output)
 
     typer.echo(f"Exported to {output}")
+
+
+@app.command()
+def evaluate(
+    match_json: Path = typer.Argument(help="Path to pipeline-produced match data JSON."),
+    ground_truth: Path = typer.Argument(help="Path to human-corrected ground truth JSON."),
+    frame_tolerance: int = typer.Option(15, "--tolerance", "-t", help="Frame tolerance for shot matching."),
+) -> None:
+    """Evaluate pipeline output against corrected ground truth."""
+    from court_vision.evaluate import match_shots
+    from court_vision.review_data import load_match_json
+
+    gt = load_match_json(ground_truth)
+    pred = load_match_json(match_json)
+    result = match_shots(gt, pred, frame_tolerance=frame_tolerance)
+
+    typer.echo(f"Contact Detection:  P={result.precision:.2f}  R={result.recall:.2f}  F1={result.f1:.2f}")
+    typer.echo(f"  TP={result.true_positives}  FP={result.false_positives}  FN={result.false_negatives}")
+    typer.echo(f"Stroke Accuracy:    {result.stroke_correct}/{result.stroke_total} = {result.stroke_accuracy:.2f}")
+    typer.echo(f"Player Accuracy:    {result.player_correct}/{result.player_total} = {result.player_accuracy:.2f}")
+
+
+@app.command()
+def tune(
+    ground_truth: Path = typer.Argument(help="Path to human-corrected ground truth JSON."),
+    tracking_json: Path = typer.Argument(help="Path to cached tracking data JSON."),
+    source: str = typer.Option("data/test_input_video.mp4", "--source", "-s", help="Source video path for match ID."),
+    top_n: int = typer.Option(5, "--top", "-n", help="Number of top results to show."),
+) -> None:
+    """Tune contact detection parameters via grid search."""
+    from court_vision.tune import grid_search
+
+    typer.echo("Running grid search...")
+    results = grid_search(ground_truth, tracking_json, source=source)
+
+    typer.echo(f"\nTop {top_n} parameter combinations:\n")
+    for i, r in enumerate(results[:top_n], 1):
+        typer.echo(f"  {i}. F1={r.evaluation.f1:.2f}  P={r.evaluation.precision:.2f}  R={r.evaluation.recall:.2f}  "
+                   f"Stroke={r.evaluation.stroke_accuracy:.2f}  "
+                   f"prox={r.params['proximity_threshold']:.0f}  "
+                   f"min_frames={r.params['min_frames_between_contacts']}")
+
+    if results:
+        best = results[0]
+        typer.echo(f"\nBest: proximity_threshold={best.params['proximity_threshold']:.0f}, "
+                   f"min_frames_between_contacts={best.params['min_frames_between_contacts']}")
 
 
 @app.command()

@@ -11,6 +11,7 @@ from court_vision.player_detect import (
     PoseKeypoints,
     FrameTrackingResult,
     detect_players_in_frame,
+    filter_non_players,
 )
 
 
@@ -335,3 +336,52 @@ class TestTrackSegment:
         results = track_segment(frames_dir, segment, homography=None)
 
         assert len(results) == 1
+
+
+class TestFilterNonPlayers:
+    def test_keeps_center_frame_detections(self):
+        """Small detection in center of frame is kept."""
+        det = PlayerDetection(
+            frame_index=0,
+            bbox=(600.0, 50.0, 629.0, 130.0),  # width=29, area=2320, centered
+            confidence=0.66,
+        )
+        result = filter_non_players([det], frame_width=1280)
+        assert len(result) == 1
+
+    def test_filters_small_margin_detection(self):
+        """Small detection at frame edge is removed."""
+        det = PlayerDetection(
+            frame_index=0,
+            bbox=(1200.0, 50.0, 1229.0, 130.0),  # width=29, area=2320, right margin
+            confidence=0.66,
+        )
+        # center_x=1214.5, right_margin=1280*0.78=998.4 → in margin
+        result = filter_non_players([det], frame_width=1280)
+        assert len(result) == 0
+
+    def test_keeps_large_margin_detection(self):
+        """Large detection at frame edge is kept."""
+        det = PlayerDetection(
+            frame_index=0,
+            bbox=(1150.0, 100.0, 1250.0, 400.0),  # width=100, area=30000, right edge
+            confidence=0.9,
+        )
+        result = filter_non_players([det], frame_width=1280)
+        assert len(result) == 1
+
+    def test_caddy_scenario(self):
+        """Reproduces the exact caddy bbox and verifies it's filtered."""
+        caddy = PlayerDetection(
+            frame_index=114,
+            bbox=(1002.0, 52.0, 1031.0, 131.0),  # width=29, area=2291
+            confidence=0.66,
+        )
+        real_player = PlayerDetection(
+            frame_index=114,
+            bbox=(500.0, 300.0, 600.0, 600.0),  # width=100, area=30000, centered
+            confidence=0.92,
+        )
+        result = filter_non_players([caddy, real_player], frame_width=1280)
+        assert len(result) == 1
+        assert result[0].confidence == 0.92

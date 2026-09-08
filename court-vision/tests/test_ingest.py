@@ -33,8 +33,12 @@ class TestDownloadVideo:
     def test_download_calls_ytdlp(self, mock_run: MagicMock, tmp_path: Path):
         mock_run.return_value = MagicMock(returncode=0)
         output_path = tmp_path / "video.mp4"
-        # Create the file as yt-dlp would
-        output_path.touch()
+
+        # Use a side_effect to create the file when yt-dlp "runs"
+        def create_file(*args, **kwargs):
+            output_path.touch()
+            return MagicMock(returncode=0)
+        mock_run.side_effect = create_file
 
         result = download_video(
             "https://www.youtube.com/watch?v=abc123", tmp_path

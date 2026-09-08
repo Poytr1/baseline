@@ -14,7 +14,9 @@ class PipelineSettings(BaseModel):
     max_interpolation_gap_s: float = 0.5
     scene_filter_mode: Literal["heuristic", "ml"] = "heuristic"
     gameplay_threshold: float = 0.45
-    ball_detection_method: Literal["tracknet", "hsv"] = "tracknet"
+    ball_detection_method: Literal["wasb", "tracknet", "hsv"] = "tracknet"
+    player_detect_stride: int = 3
+    scene_filter_stride: int = 5
 
 
 class OutputSettings(BaseModel):

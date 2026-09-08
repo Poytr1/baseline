@@ -43,6 +43,7 @@ class TestProcessCommandOutput:
             court_detections=[
                 CourtDetectionResult(success=True, num_lines_detected=7),
             ],
+            match_data=None,
         )
 
         result = runner.invoke(app, ["process", "test.mp4"])
@@ -81,6 +82,7 @@ class TestProcessCommandTrackingOutput:
                 ),
                 FrameTrackingResult(frame_index=1, ball=None, players=[], poses=[]),
             ],
+            match_data=None,
         )
 
         result = runner.invoke(app, ["process", "test.mp4"])
@@ -91,10 +93,13 @@ class TestProcessCommandTrackingOutput:
 
 class TestProcessCommandShotOutput:
     @patch("court_vision.pipeline.run_pipeline")
-    def test_process_shows_shot_summary(self, mock_pipeline: MagicMock):
+    def test_process_shows_shot_summary(self, mock_pipeline: MagicMock, tmp_path: Path):
         """Process command displays shot classification summary."""
         from court_vision.scene_filter import GameplaySegment
         from court_vision.shot_classify import MatchData, Point, Shot
+
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
 
         mock_pipeline.return_value = MagicMock(
             total_frames=100,
@@ -105,6 +110,7 @@ class TestProcessCommandShotOutput:
             gameplay_frame_count=51,
             court_detections=[],
             tracking_results=[],
+            frames_dir=frames_dir,
             match_data=MatchData(
                 match_id="test",
                 source_url="test.mp4",
