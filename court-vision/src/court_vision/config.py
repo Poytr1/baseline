@@ -38,6 +38,7 @@ class PipelineSettings(BaseModel):
     ball_smooth_window: int = 3
     ball_stationary_std_px: float = 3.0  # over a 1 s window
     ball_strong_confidence: float = 0.75
+    ball_min_run_s: float = 0.12  # a ball tracklet shorter than this must link to a longer one or is dropped
 
     # ── player detection + pose ──
     player_model: str = "yolov8s-pose.pt"
@@ -97,7 +98,8 @@ STAGE_PARAMS: dict[str, tuple[str, ...]] = {
     "court": ("court_method",),
     "ball": ("ball_detection_method", "ball_confidence_threshold", "ball_frame_step", "ball_far_crop"),
     "ball_post": ("ball_max_speed_px", "ball_max_gap_s", "ball_smooth_window",
-                  "ball_stationary_std_px", "ball_strong_confidence"),
+                  "ball_stationary_std_px", "ball_strong_confidence",
+                  "ball_min_run_s"),
     "players": ("player_model", "player_imgsz", "player_conf", "player_detect_stride",
                 "player_far_crop", "player_max_court_x", "player_max_court_y"),
     "scoreboard": ("scoreboard_sample_s",),
@@ -116,7 +118,7 @@ STAGE_DEPS: dict[str, tuple[str, ...]] = {
     "scene": ("ingest",),
     "court": ("ingest", "scene"),
     "ball": ("ingest", "scene", "court"),
-    "ball_post": ("ball",),
+    "ball_post": ("ball", "court"),
     "players": ("ingest", "scene", "court"),
     "scoreboard": ("ingest",),
     "shots": ("scene", "court", "ball_post", "players", "scoreboard"),

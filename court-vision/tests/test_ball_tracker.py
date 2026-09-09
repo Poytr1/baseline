@@ -294,7 +294,7 @@ class TestFarBallRoi:
 class TestRejectVelocityOutliers:
     def test_straight_track_unchanged(self):
         dets = _line(range(10))
-        assert reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0) == dets
+        assert reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0, min_run_s=0.0) == dets
 
     def test_fewer_than_two_detections_returned_as_is(self):
         assert reject_velocity_outliers([], fps=30.0) == []
@@ -304,48 +304,48 @@ class TestRejectVelocityOutliers:
     def test_isolated_blip_inside_a_track_is_dropped(self):
         dets = _line(range(10))
         dets[5] = _det(5, 900.0, 900.0)  # false peak far off the track
-        result = reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0)
+        result = reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0, min_run_s=0.0)
         assert [d.frame_index for d in result] == [0, 1, 2, 3, 4, 6, 7, 8, 9]
 
     def test_two_frame_blip_is_dropped(self):
         dets = _line(range(12))
         dets[5] = _det(5, 900.0, 900.0)
         dets[6] = _det(6, 905.0, 905.0)  # consistent with the first blip, not with the track
-        result = reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0)
+        result = reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0, min_run_s=0.0)
         assert [d.frame_index for d in result] == [0, 1, 2, 3, 4, 7, 8, 9, 10, 11]
 
     def test_isolated_short_run_at_the_start_is_dropped(self):
         dets = [_det(0, 900.0, 900.0)] + _line(range(1, 8))
-        result = reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0)
+        result = reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0, min_run_s=0.0)
         assert [d.frame_index for d in result] == [1, 2, 3, 4, 5, 6, 7]
 
     def test_isolated_short_run_at_the_end_is_dropped(self):
         dets = _line(range(7)) + [_det(7, 900.0, 900.0), _det(8, 902.0, 902.0)]
-        result = reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0)
+        result = reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0, min_run_s=0.0)
         assert [d.frame_index for d in result] == [0, 1, 2, 3, 4, 5, 6]
 
     def test_speed_cap_scales_with_the_frame_gap(self):
         # 600 px over 5 frames == 120 px/frame, under a 150 px/frame cap
         dets = [_det(0, 0.0, 0.0), _det(5, 600.0, 0.0), _det(10, 1200.0, 0.0)]
-        assert reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0) == dets
+        assert reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0, min_run_s=0.0) == dets
         # the same displacement in one frame is an outlier chain -> everything goes
         dets = [_det(0, 0.0, 0.0), _det(1, 600.0, 0.0), _det(2, 1200.0, 0.0)]
-        assert reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0) == []
+        assert reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0, min_run_s=0.0) == []
 
     def test_min_run_one_keeps_every_run(self):
         dets = _line(range(10))
         dets[5] = _det(5, 900.0, 900.0)
-        result = reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0, min_run=1)
+        result = reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=150.0, min_run=1, min_run_s=0.0)
         assert result == dets
 
     def test_generous_cap_keeps_the_blip(self):
         dets = _line(range(10))
         dets[5] = _det(5, 900.0, 900.0)
-        assert reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=5000.0) == dets
+        assert reject_velocity_outliers(dets, fps=30.0, max_speed_px_per_frame=5000.0, min_run_s=0.0) == dets
 
     def test_output_preserves_order_and_objects(self):
         dets = _line(range(5))
-        result = reject_velocity_outliers(dets, fps=30.0)
+        result = reject_velocity_outliers(dets, fps=30.0, min_run_s=0.0)
         assert [d is o for d, o in zip(result, dets)] == [True] * 5
 
 
@@ -520,7 +520,7 @@ class TestPostprocessTrajectory:
     def test_outlier_removed_gap_filled_and_smoothed(self):
         raw = _line([0, 1, 2, 3, 4, 6, 9, 10, 11, 12])  # frames 5, 7, 8 missing
         raw.insert(5, _det(5, 900.0, 900.0))  # blip off the track at frame 5
-        traj = postprocess_trajectory(raw, fps=30.0, max_gap_s=0.5, max_speed_px=150.0, smooth_window=3)
+        traj = postprocess_trajectory(raw, fps=30.0, max_gap_s=0.5, max_speed_px=150.0, smooth_window=3, min_run_s=0.0)
         assert isinstance(traj, BallTrajectory)
         assert traj.fps == 30.0
         assert [d.frame_index for d in traj.detections] == list(range(13))
@@ -533,7 +533,7 @@ class TestPostprocessTrajectory:
     def test_speed_cap_is_scaled_by_fps(self):
         """``max_speed_px`` is per 30fps-frame: at 60fps the per-frame cap halves."""
         raw = _line(range(6), dx=100.0)  # 100 px/frame
-        assert len(postprocess_trajectory(raw, fps=30.0, max_speed_px=150.0).detections) == 6
+        assert len(postprocess_trajectory(raw, fps=30.0, max_speed_px=150.0, min_run_s=0.0).detections) == 6
         assert postprocess_trajectory(raw, fps=60.0, max_speed_px=150.0).detections == []
 
     def test_empty_input(self):
@@ -562,19 +562,16 @@ class TestBuildTrajectory:
             tmp_path, 3, 6, method="tracknet", confidence_threshold=0.55, frame_step=2,
             progress_callback=cb, far_roi=(1, 2, 3, 4),
         )
-        post.assert_called_once_with(raw, 60.0, max_gap_s=0.4, max_speed_px=120.0, smooth_window=5)
+        post.assert_called_once_with(raw, 60.0, max_gap_s=0.4, max_speed_px=120.0, smooth_window=5, homography=None, min_run_s=0.12, frame_shape=None)
         assert isinstance(traj, BallTrajectory)
         assert traj.fps == 60.0
 
     def test_applies_smoothing_to_noisy_detections(self, tmp_path: Path):
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, 5)
-        noisy = {
-            0: _det(0, 100.0, 212.0), 1: _det(1, 110.0, 188.0), 2: _det(2, 120.0, 212.0),
-            3: _det(3, 130.0, 188.0), 4: _det(4, 140.0, 212.0),
-        }
+        noisy = {i: _det(i, 100.0 + 10 * i, 212.0 if i % 2 == 0 else 188.0) for i in range(5)}
         with _patched_detector("tracknet", lambda frames, frame_index, **kw: noisy.get(frame_index)):
-            traj = build_trajectory(frames_dir, 0, 4, fps=30.0, method="tracknet")
+            traj = build_trajectory(frames_dir, 0, 4, fps=30.0, method="tracknet", min_run_s=0.0)
         ys = [d.y for d in traj.detections]
         assert len(ys) == 5
         assert np.std(ys) < 10.0  # raw std is ~12
@@ -723,3 +720,94 @@ class TestMapBallToCourt:
         assert (court_x, court_y) == pytest.approx((0.0, 0.0))
         court_x, court_y = map_ball_to_court(_det(0, 690.0, 385.0), H_LINEAR)
         assert (court_x, court_y) == pytest.approx((1.0, -1.0))
+
+
+class TestTrackletLinking:
+    """Short tracklets survive only by linking to a long run (trajectory.reject_velocity_outliers)."""
+
+    def test_short_run_linked_to_long_run_is_kept(self):
+        long = _line(range(0, 12))                       # 12 frames at 10 px/frame
+        short = _line([14, 15, 16])                       # continues after a 2-frame occlusion (x = 240..260)
+        result = reject_velocity_outliers(long + short, fps=30.0, max_speed_px_per_frame=150.0)
+        assert [d.frame_index for d in result] == list(range(12)) + [14, 15, 16]
+
+    def test_isolated_short_run_far_away_is_dropped(self):
+        long = _line(range(0, 12))
+        junk = [_det(f, 900.0, 600.0 + f) for f in (13, 14, 15)]  # a shoe, 800 px away
+        result = reject_velocity_outliers(long + junk, fps=30.0, max_speed_px_per_frame=150.0)
+        assert [d.frame_index for d in result] == list(range(12))
+
+    def test_short_run_after_a_gap_links_when_speed_matches(self):
+        long = _line(range(0, 12))                       # ends at x=210, 10 px/frame
+        # 19 frames later (a new tracklet: gap > fps/2), 190 px further on: bridge = 10 px/frame
+        short = _line([30, 31, 32], x0=100.0)             # x = 400, 410, 420
+        result = reject_velocity_outliers(long + short, fps=30.0, max_speed_px_per_frame=150.0)
+        assert [d.frame_index for d in result] == list(range(12)) + [30, 31, 32]
+
+    def test_a_lone_pair_only_links_across_a_short_gap(self):
+        long = _line(range(0, 12))
+        # two detections are too little evidence to bridge 0.6 s, even at the right speed
+        pair = _line([30, 31], x0=100.0)
+        assert [d.frame_index for d in reject_velocity_outliers(long + pair, fps=30.0)] == list(range(12))
+        # ...but they do link across a quarter second
+        near_pair = _line([17, 18], x0=100.0)
+        result = reject_velocity_outliers(long + near_pair, fps=30.0)
+        assert [d.frame_index for d in result] == list(range(12)) + [17, 18]
+
+    def test_blips_stand_still_and_are_dropped(self):
+        track = _line(range(0, 30))                                  # a real flight, 290 px
+        head = [_det(f, 900.0, 100.0 + (f % 2)) for f in range(50, 60)]  # a spectator's head
+        hopping = [_det(f, 900.0 + 30.0 * (f // 3), 100.0) for f in range(80, 95)]  # detector hopping between heads
+        result = reject_velocity_outliers(track + head + hopping, fps=30.0, blip_extent_px=40.0)
+        assert [d.frame_index for d in result] == list(range(30))
+        # the same runs pass when the check is off
+        result = reject_velocity_outliers(track + head + hopping, fps=30.0, blip_extent_px=0.0)
+        assert len(result) == 30 + 10 + 15
+        # a stationary run of a full second is left to the stationary filter
+        held = [_det(f, 900.0, 100.0 + (f % 2)) for f in range(120, 151)]
+        assert len(reject_velocity_outliers(track + held, fps=30.0, blip_extent_px=40.0)) == 30 + 31
+
+    def test_a_gap_step_is_held_to_the_local_speed(self):
+        """A blip six frames before the ball re-appears far away averages a legal
+        speed over the gap, but not a plausible one next to the ball's own speed."""
+        from court_vision.trajectory import build_runs
+
+        slow = _line(range(10, 20), x0=700.0, dx=2.0, y=170.0)     # far-court ball, 2 px/frame
+        blip = [_det(4, 640.0, 530.0), _det(5, 640.0, 531.0)]      # bottom of the frame, 5 frames earlier
+        runs = build_runs(blip + slow, 75.0, max_gap_frames=30)
+        assert [len(r) for r in runs] == [2, 10]
+        # the same gap is fine when the ball keeps its speed across it
+        fast = _line(list(range(0, 5)) + list(range(10, 15)), dx=60.0)
+        assert [len(r) for r in build_runs(fast, 75.0, max_gap_frames=30)] == [10]
+
+    def test_short_run_that_bridges_too_fast_is_dropped(self):
+        long = _line(range(0, 12))                       # ends at x=210, 10 px/frame
+        # 19 frames later but 1200 px away: bridge 63 px/frame, 6x the track speed
+        short = [_det(30, 1410.0, 200.0), _det(31, 1420.0, 200.0)]
+        result = reject_velocity_outliers(long + short, fps=30.0, max_speed_px_per_frame=150.0)
+        assert [d.frame_index for d in result] == list(range(12))
+
+    def test_court_gate_keeps_airborne_far_balls_and_drops_the_stands(self):
+        from court_vision.trajectory import court_gate
+
+        # image-like mapping: pixel y = 600 - 20 * court_y (far baseline at y=362, net at 600)
+        H = np.array([[0.02, 0.0, -6.4], [0.0, -0.05, 30.0], [0.0, 0.0, 1.0]])
+        on_court = _det(0, 400.0, 500.0)      # inside the ground polygon
+        far_air = _det(1, 320.0, 250.0)       # above the far baseline: projects ~17 m past it, still a ball
+        stands = _det(2, 320.0, 40.0)         # way above the far box
+        wide = _det(3, 1200.0, 500.0)         # 17 m outside the sideline
+        kept = court_gate([on_court, far_air, stands, wide], H, frame_shape=(720, 1280))
+        assert kept == [on_court, far_air]
+        assert court_gate([stands], None) == [stands]
+
+
+class TestShotSpeed:
+    def test_bounce_speed_from_feet_to_landing(self):
+        from court_vision.ball_speed import bounce_speed
+
+        # 20 m in 0.5 s at 30 fps (15 frames) = 40 m/s = 144 km/h
+        est = bounce_speed((0.0, -12.0), (2.0, 7.9, 15), 0, 30.0)
+        assert est is not None and est.method == "bounce"
+        assert abs(est.kmh - 143.4) < 1.0
+        assert bounce_speed((0.0, -12.0), (2.0, 7.9, 2), 0, 30.0) is None  # too short a flight
+

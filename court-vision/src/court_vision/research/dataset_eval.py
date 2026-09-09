@@ -141,9 +141,10 @@ def evaluate_ball(
     with_hits: bool = True,
     log=print,
 ) -> BallEval:
-    from court_vision.ball_tracker import postprocess_trajectory, detect_ball_sequence
+    from court_vision.ball_tracker import detect_ball_sequence
+    from court_vision.trajectory import finalize_ball_by_frame, postprocess_trajectory
     from court_vision.hit_detect import detect_hits
-    from court_vision.player_detect import detect_players_segment, finalize_ball_by_frame
+    from court_vision.player_detect import detect_players_segment
     from court_vision.research.datasets import load_ball_clip
     from court_vision.scene_filter import GameplaySegment
 

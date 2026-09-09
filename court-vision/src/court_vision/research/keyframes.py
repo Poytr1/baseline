@@ -36,6 +36,7 @@ def draw_trail(
     tracking_by_frame: dict[int, FrameTrackingResult],
     frame_index: int,
     trail: int = 15,
+    max_jump_px: float | None = None,
 ) -> np.ndarray:
     """Draw the ball trail over the previous ``trail`` frames (fading) and the
     current ball position (solid). Interpolated positions are hollow."""
@@ -47,6 +48,8 @@ def draw_trail(
             pts.append(None)
             continue
         pts.append((int(t.ball.x), int(t.ball.y), t.ball.interpolated, t.ball.confidence))
+    if max_jump_px is None:
+        max_jump_px = 0.15 * frame.shape[1]
     prev = None
     for i, p in enumerate(pts):
         if p is None:
@@ -54,7 +57,8 @@ def draw_trail(
             continue
         alpha = (i + 1) / len(pts)
         color = tuple(int(c * (0.35 + 0.65 * alpha)) for c in TRAIL_COLOR)
-        if prev is not None:
+        # never draw a line across an implausible jump (a different object)
+        if prev is not None and abs(p[0] - prev[0]) + abs(p[1] - prev[1]) <= max_jump_px:
             cv2.line(out, prev[:2], p[:2], color, 2)
         r = 6 if i == len(pts) - 1 else 3
         if p[2]:

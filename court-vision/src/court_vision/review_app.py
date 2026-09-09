@@ -245,8 +245,9 @@ def run_app() -> None:
 
     changed = False
     for j, shot in enumerate(point.shots):
+        speed_txt = f", {shot.speed_kmh:.0f} km/h" if shot.speed_kmh else ""
         with st.expander(f"Shot {shot.shot_number}: {shot.stroke} by {shot.player} "
-                         f"(conf: {shot.confidence:.2f})", expanded=True):
+                         f"(conf: {shot.confidence:.2f}{speed_txt})", expanded=True):
             col_stroke, col_player, col_delete = st.columns([3, 3, 1])
             with col_stroke:
                 new_stroke = st.selectbox(

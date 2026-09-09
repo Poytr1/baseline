@@ -9,6 +9,7 @@ from datetime import date
 
 import numpy as np
 
+from court_vision.ball_speed import bounce_speed
 from court_vision.ball_tracker import map_ball_to_court
 from court_vision.config import PipelineSettings
 from court_vision.hit_detect import Hit, detect_hits
@@ -43,6 +44,7 @@ class Shot:
     stroke: str  # forehand, backhand, serve, volley, overhead, slice
     placement: ShotPlacement | None
     confidence: float
+    speed_kmh: float | None = None  # average speed to the net (see ball_speed.py)
 
 
 @dataclass
@@ -456,18 +458,26 @@ def estimate_bounce(
     hitter_role: str | None = None,
     net_margin_m: float = 2.0,
     min_prominence_m: float = 1.0,
-) -> tuple[float, float] | None:
+    with_frame: bool = False,
+    min_kink_mps: float = 8.0,
+) -> tuple[float, float] | tuple[float, float, int] | None:
     """Estimate where the ball lands after the hit at ``start``.
 
-    Projecting an airborne ball through the ground homography overshoots:
-    the higher the ball, the deeper it appears. So along a flight the
-    projected depth |y| runs ahead, falls back as the ball descends, is
-    closest to the truth at the bounce, and runs away again as the ball
-    rises off the ground. The landing is therefore the first local
-    *minimum* of projected depth (with at least ``min_prominence_m`` of
-    fall-back before it) on the opponent's side of the net. Returns
-    court-space (x, y) in metres, or None if no bounce is visible before
-    ``end`` (ball still in flight when the clip ends).
+    Projecting an airborne ball through the ground homography displaces
+    it away from the camera in proportion to its height. The projected
+    depth of a ball landing on the far side therefore runs ahead while it
+    rises, falls back as it descends and runs ahead again after the bounce
+    (a convex kink: the depth rate jumps up), while a ball landing on the
+    near side is pulled toward the net while airborne, so its depth rate
+    drops at the bounce (a concave kink). The kink with the sign expected
+    for the hitter's side is the primary cue; a prominent local minimum of
+    projected depth (a high far-side ball) is the fallback. Only samples
+    on the opponent's side, at least ``net_margin_m`` from the net band
+    (which produces stuck detections), are considered, and a candidate
+    that would put the ball behind the back fence is still airborne.
+
+    Returns court-space (x, y) in metres (plus the bounce frame when
+    ``with_frame``), or None if no bounce is visible before ``end``.
     """
     if homography is None:
         return None
@@ -479,6 +489,7 @@ def estimate_bounce(
     if len(samples) < 5:
         return None
     court = [map_ball_to_court(b, homography) for _, b in samples]
+    frames_all = [f for f, _ in samples]
     opp_sign = None
     if hitter_role is not None:
         opp_sign = 1.0 if hitter_role == "near_player" else -1.0
@@ -489,26 +500,52 @@ def estimate_bounce(
     if len(keep) < 5:
         return None
     court = [court[i] for i in keep]
+    frames_kept = np.array([frames_all[i] for i in keep], dtype=np.float64)
     depth = np.array([abs(c[1]) for c in court], dtype=np.float64)
-    k = max(1, int(round(fps / 30.0)))
-    if len(depth) > 2 * k + 1:
-        padded = np.pad(depth, k, mode="edge")
-        depth = np.convolve(padded, np.ones(2 * k + 1) / (2 * k + 1), mode="valid")
-    win = max(2, int(round(fps / 10.0)))
     n = len(depth)
-    for i in range(win, n - win):
-        left = depth[i - win:i]
-        right = depth[i + 1:i + 1 + win]
-        if depth[i] > left.min() or depth[i] > right.min():
-            continue
-        if depth[:i].max() - depth[i] < min_prominence_m:
-            continue  # no real fall-back before it (apex plateau, jitter)
-        if right.max() - depth[i] < 0.3:
-            continue  # not rising again yet
+
+    def plausible(i: int) -> bool:
         x, y = court[i]
-        if abs(y) > _BASELINE_Y + 2.0 or abs(x) > 7.0:
-            continue  # a ball cannot land there (behind the back fence): still airborne
-        return court[i]
+        return abs(y) <= _BASELINE_Y + 2.0 and abs(x) <= 7.0
+
+    # cue 1: kink — the projected depth rate jumps at the bounce. The
+    # landing is the *first* clear kink (a local peak at least half as
+    # strong as the strongest); a later, larger one is the second bounce
+    # of a winner or the ball hitting the fence.
+    w = max(2, int(round(fps / 10.0)))
+    if n >= 2 * w + 3:
+        vel = np.gradient(depth, frames_kept) * fps  # m/s along the depth axis
+        jumps = np.zeros(n)
+        for i in range(w, n - w):
+            jump = float(np.mean(vel[i + 1:i + 1 + w]) - np.mean(vel[i - w:i]))
+            # far-side landing: rate jumps up; near-side landing: rate drops
+            jumps[i] = jump if court[i][1] > 0 else -jump
+        floor = max(min_kink_mps, 0.5 * float(jumps.max()))
+        for i in range(w, n - w):
+            if jumps[i] >= floor and jumps[i] >= jumps[i - 1] and jumps[i] >= jumps[i + 1] and plausible(i):
+                x, y = court[i]
+                return (x, y, int(frames_kept[i])) if with_frame else (x, y)
+
+    # cue 2: first prominent local minimum of projected depth
+    k = max(1, int(round(fps / 30.0)))
+    sm = depth
+    if len(sm) > 2 * k + 1:
+        padded = np.pad(sm, k, mode="edge")
+        sm = np.convolve(padded, np.ones(2 * k + 1) / (2 * k + 1), mode="valid")
+    win = max(2, int(round(fps / 10.0)))
+    for i in range(win, n - win):
+        left = sm[i - win:i]
+        right = sm[i + 1:i + 1 + win]
+        if sm[i] > left.min() or sm[i] > right.min():
+            continue
+        if sm[:i].max() - sm[i] < min_prominence_m:
+            continue
+        if right.max() - sm[i] < 0.3:
+            continue
+        if not plausible(i):
+            continue
+        x, y = court[i]
+        return (x, y, int(frames_kept[i])) if with_frame else (x, y)
     return None
 
 
@@ -709,9 +746,15 @@ def build_match_data(
                 stroke, stroke_conf = "serve", 0.5
 
             placement = None
+            speed = None
             if H is not None:
                 nxt = hits[shot_num].frame if shot_num < len(hits) else min(end, hit.frame + int(2.5 * fps))
-                landing = estimate_bounce(by_frame, hit.frame, nxt, H, fps, hitter_role=role)
+                feet = player.court_position if (player and player.court_position) else None
+                landing_f = estimate_bounce(by_frame, hit.frame, nxt, H, fps, hitter_role=role, with_frame=True)
+                landing = landing_f[:2] if landing_f else None
+                if landing_f is not None:
+                    est = bounce_speed(feet, landing_f, hit.frame, fps, by_frame, H)
+                    speed = est.kmh if est else None
                 if landing is not None:
                     zone = compute_placement_zone(
                         x=landing[0], y=landing[1], is_serve=(stroke == "serve"), hitter=role,
@@ -726,6 +769,7 @@ def build_match_data(
                 stroke=stroke,
                 placement=placement,
                 confidence=stroke_conf,
+                speed_kmh=speed,
             ))
 
         # A point starts with the serve: whatever the hit detector saw in the

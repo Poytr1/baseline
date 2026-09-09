@@ -59,7 +59,7 @@ class Scorecard:
     slice_recall: float = 0.0
     stroke_confusion: dict = field(default_factory=dict)  # gt -> pred -> count
     # stages (label-free)
-    ball_coverage: float = 0.0  # fraction of gameplay frames with a real (non-interpolated) ball
+    ball_coverage: float = 0.0  # fraction of rally frames (inside predicted points) with a real (non-interpolated) ball
     ball_coverage_any: float = 0.0
     players_both_rate: float = 0.0
     court_success_rate: float = 0.0
@@ -139,9 +139,15 @@ def score_run(
 
     # ── label-free stage health ──
     n_frames = len(tracking)
+    # Ball coverage is judged on rally frames only: between points the ball
+    # is in a hand or a pocket, and a tracker that "covers" those frames is
+    # tracking something else.
+    spans = [(p.start_frame, p.end_frame) for p in pred.points] if pred.points else None
+    rally = [t for t in tracking if spans is None or any(a <= t.frame_index <= b for a, b in spans)]
+    if rally:
+        sc.ball_coverage = sum(1 for t in rally if t.ball is not None and not t.ball.interpolated) / len(rally)
+        sc.ball_coverage_any = sum(1 for t in rally if t.ball is not None) / len(rally)
     if n_frames:
-        sc.ball_coverage = sum(1 for t in tracking if t.ball is not None and not t.ball.interpolated) / n_frames
-        sc.ball_coverage_any = sum(1 for t in tracking if t.ball is not None) / n_frames
         sc.players_both_rate = sum(1 for t in tracking if len(t.players) == 2) / n_frames
     sc.court_success_rate = (sum(court_success) / len(court_success)) if court_success else 0.0
 
