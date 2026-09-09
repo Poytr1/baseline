@@ -223,7 +223,13 @@ while the first kink over a fixed threshold fires on noise (a 251 km/h
 serve). On the labelled clips every shot gets a speed: serves 105–146 km/h,
 groundstrokes 61–125 km/h, the one slice 72 km/h. It is left empty when no
 bounce is visible before the next hit. `research render` prints it with
-each stroke label and in the rally strip.
+each stroke label and in the rally strip, and draws the two ground points
+it is measured between on a top-down court in the bottom-right corner:
+the hitter's feet at contact (numbered dot, matching the rally strip) and
+the first bounce (cross), joined for the latest shot. The live player
+positions are the ringed dots. The airborne ball is deliberately not
+drawn on that map — its ground projection is metres off, which is the
+whole reason the speed is taken between contact and bounce.
 
 ## Trajectory cleaning
 

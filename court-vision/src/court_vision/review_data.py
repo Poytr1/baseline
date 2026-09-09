@@ -39,6 +39,8 @@ def load_match_json(path: Path) -> MatchData:
                 placement=placement,
                 confidence=s["confidence"],
                 speed_kmh=s.get("speed_kmh"),
+                contact=tuple(s["contact"]) if s.get("contact") else None,
+                bounce_frame=s.get("bounce_frame"),
             ))
 
         points.append(Point(
