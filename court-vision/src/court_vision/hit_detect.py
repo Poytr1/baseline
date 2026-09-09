@@ -38,9 +38,14 @@ class Hit:
 
 
 def _expanded_bbox(p: PlayerDetection, margin: float) -> tuple[float, float, float, float]:
+    """The player box grown by ``margin`` of its size — sideways by the larger
+    of its width and three quarters of its height, because a player seen
+    edge-on (a corner camera, a far player mid-swing) is a narrow box while
+    the racket still reaches out about a body-height."""
     x1, y1, x2, y2 = p.bbox
     w, h = x2 - x1, y2 - y1
-    return (x1 - w * margin, y1 - h * margin, x2 + w * margin, y2 + h * margin)
+    reach = max(w, 0.75 * h)
+    return (x1 - reach * margin, y1 - h * margin, x2 + reach * margin, y2 + h * margin)
 
 
 def _dist_to_bbox(x: float, y: float, bbox: tuple[float, float, float, float]) -> float:
@@ -118,6 +123,7 @@ def detect_hits(
     max_speed_px: float = 150.0,
     trace: dict[int, str] | None = None,
     frame_height: int | None = None,
+    frame_width: int | None = None,
     close_up_ratio: float = 0.55,
 ) -> list[Hit]:
     """Detect racket contacts from ball motion + player proximity + pose.
@@ -210,6 +216,31 @@ def detect_hits(
                 window_end[k] = j
             return float(dep[j] - dep[k]) * direction
 
+        def window_index(k: int, direction: int, strict: bool = True) -> int | None:
+            """Index of the last sample inside the continuous window after (+1)
+            / before (-1) k, with the same continuity rule as window_delta."""
+            j = k
+            lim = frames[k] + direction * post_w
+            while 0 <= j + direction < n and (frames[j + direction] - lim) * direction <= 0:
+                if run_id[j + direction] != run_id[k]:
+                    break
+                j += direction
+            if j == k or (strict and abs(frames[j] - frames[k]) < 0.8 * post_w):
+                return None
+            return j
+
+        def leave_delta(k: int, direction: int, hitter: PlayerDetection | None) -> float | None:
+            """How much farther from the hitter's box the ball is at the end of
+            the window than at k (px). Viewpoint-free: a struck ball leaves
+            the hitter whichever way the camera looks, whereas image depth
+            (y) and court depth both mislead a low camera when the ball rises."""
+            if hitter is None:
+                return None
+            j = window_index(k, direction, strict=True)
+            if j is None:
+                return None
+            return _dist_to_bbox(float(xy[j][0]), float(xy[j][1]), hitter.bbox) - _dist_to_bbox(float(xy[k][0]), float(xy[k][1]), hitter.bbox)
+
         def note(f: int, why: str) -> None:
             if trace is not None and f in trace:
                 trace[f] = why
@@ -272,8 +303,10 @@ def detect_hits(
             if dep_court is not None:
                 d_post_c = window_delta(k, +1, strict=True, dep=dep_court)
                 away_court = d_post_c is not None and d_post_c * _COURT_SIGN[role] <= -1.0
-            if not (away_img or away_court):
-                note(f, f"{kind}: not away (img d={d_post:.0f}px, need {-0.12 * bbox_h * _IMG_SIGN[role]:.0f})")
+            leave = leave_delta(k, +1, hitter)
+            away_leave = leave is not None and leave >= 0.5 * bbox_h
+            if not (away_img or away_court or away_leave):
+                note(f, f"{kind}: not away (img d={d_post:.0f}px, need {-0.12 * bbox_h * _IMG_SIGN[role]:.0f}; leave={leave})")
                 continue  # not moving away from the hitter -> bounce / approach
             d_pre = window_delta(k, -1, strict=False, dep=dep_img)
             sgn = _IMG_SIGN[role]
@@ -288,7 +321,8 @@ def detect_hits(
             ) == 0.0:
                 note(f, f"{kind}: ball still hovering at hitter after window")
                 continue
-            toward_pre = d_pre is None or d_pre * sgn > -away_min * 0.5
+            approach = leave_delta(k, -1, hitter)  # positive: the ball was farther from the hitter before
+            toward_pre = d_pre is None or d_pre * sgn > -away_min * 0.5 or (approach is not None and approach > 0)
             if not (toward_pre or burst or track_start):
                 note(f, f"{kind}: ball was not approaching before (d_pre={d_pre})")
                 continue
@@ -320,7 +354,8 @@ def detect_hits(
                 d_c = window_delta(k, +1, strict=True, dep=dep_court)
                 if d_c is not None and d_c * _COURT_SIGN[role] <= -1.0:
                     return True
-            return False
+            leave = leave_delta(k, +1, hitter)
+            return leave is not None and leave >= 0.5 * bbox_h
 
         candidates.extend(_swing_candidates(tracking, fps, swing_min, player_margin, by_frame, ball_leaves,
                                             frame_height=frame_height, close_up_ratio=close_up_ratio))
@@ -353,7 +388,10 @@ def detect_hits(
             kept.append(c)
     kept.sort(key=lambda h: h.frame)
     kept = enforce_alternation(kept, fps)
-    return fill_missed_returns(kept, by_frame, fps, player_margin=player_margin, min_gap=min_gap)
+    return fill_missed_returns(
+        kept, by_frame, fps, player_margin=player_margin, min_gap=min_gap,
+        frame_shape=(int(frame_width or 1280), int(frame_height or 720)),
+    )
 
 
 def fill_missed_returns(
@@ -363,13 +401,16 @@ def fill_missed_returns(
     player_margin: float = 0.6,
     min_gap: int = 10,
     max_interval_s: float = 4.0,
+    frame_shape: tuple[int, int] = (1280, 720),
 ) -> list[Hit]:
     """Players strictly alternate within a rally. Two consecutive hits by the
     same player less than ``max_interval_s`` apart mean the opponent's
     return was missed (typically a far-court hit with the ball too small to
     reverse cleanly); estimate it as the frame where the ball came closest
-    to the opponent's body in between. Longer gaps (second serves, a new
-    point) are left alone."""
+    to the opponent's body in between, or — when the ball never came near
+    them on screen — as the middle of the stretch it spent out of frame
+    (see :func:`_offscreen_return`). Longer gaps (second serves, a new
+    point) are left alone. ``frame_shape`` is (width, height)."""
     max_interval = int(max_interval_s * fps)
     out: list[Hit] = []
     for h in sorted(hits, key=lambda h: h.frame):
@@ -389,11 +430,52 @@ def fill_missed_returns(
                 d = math.hypot(t.ball.x - cx, t.ball.y - cy) / max(p.bbox[3] - p.bbox[1], 1.0)
                 if best is None or d < best[0]:
                     best = (d, f, (t.ball.x, t.ball.y))
+            if best is None:
+                best = _offscreen_return(out[-1].frame + min_gap, h.frame - min_gap, by_frame, frame_shape)
             if best is not None:
                 out.append(Hit(frame=best[1], role=other, score=0.5, ball_xy=best[2], turn_deg=0.0,
                                speed_pre=0.0, speed_post=0.0, kind="fill"))
         out.append(h)
     return out
+
+
+def _offscreen_return(
+    start: int,
+    end: int,
+    by_frame: dict[int, FrameTrackingResult],
+    frame_shape: tuple[int, int] = (1280, 720),
+    edge_frac: float = 0.12,
+    min_gap: int = 3,
+) -> tuple[float, int, tuple[float, float]] | None:
+    """A return struck outside the frame: the ball leaves through an edge,
+    the track goes dark, the ball comes back. Estimate the contact at the
+    middle of the longest such gap between ``start`` and ``end`` (a corner
+    camera often has the near player half out of frame). Returns
+    (0, frame, last seen ball position), or None when the ball never left
+    through an edge."""
+    w, h = frame_shape
+    last_seen: tuple[float, float] | None = None
+    gap_start: int | None = None
+    best: tuple[int, int, tuple[float, float]] | None = None  # (gap length, mid frame, exit position)
+    for f in range(start, end + 1):
+        t = by_frame.get(f)
+        b = t.ball if t is not None else None
+        if b is not None and not b.interpolated:
+            if gap_start is not None and last_seen is not None:
+                length = f - gap_start
+                if best is None or length > best[0]:
+                    best = (length, (gap_start + f) // 2, last_seen)
+            gap_start = None
+            last_seen = (b.x, b.y)
+        elif gap_start is None:
+            gap_start = f
+    if best is None or best[0] < min_gap:
+        return None
+    x, y = best[2]
+    near_edge = x <= edge_frac * w or x >= (1.0 - edge_frac) * w or y <= edge_frac * h or y >= (1.0 - edge_frac) * h
+    if not near_edge:
+        return None
+    return (0.0, best[1], (x, y))
 
 
 def enforce_alternation(hits: list[Hit], fps: float, max_same_role_gap_s: float = 1.5) -> list[Hit]:
@@ -474,6 +556,7 @@ def _swing_candidates(
     by_frame: dict[int, FrameTrackingResult],
     ball_leaves=None,
     frame_height: int | None = None,
+    frame_width: int | None = None,
     close_up_ratio: float = 0.55,
 ) -> list[Hit]:
     out: list[Hit] = []

@@ -429,3 +429,28 @@ class TestStageShots:
             stage_shots("src.mp4", _frame_seq(tmp_path), [], None, [], _config())
         assert m.call_args.kwargs["court_homography"] is None
         assert m.call_args.kwargs["segment_homographies"] == []
+
+
+class TestFixedCamera:
+    def test_whole_clip_segment_spans_every_frame(self):
+        from court_vision.pipeline import whole_clip_segment
+
+        seg = whole_clip_segment(SimpleNamespace(total_frames=300, fps=60.0))
+        assert (seg.start_frame, seg.end_frame, seg.frame_count) == (0, 299, 300)
+        assert seg.end_time_s == pytest.approx(299 / 60.0)
+
+    def test_load_fixed_court_rescales_to_the_run_resolution(self, tmp_path):
+        import json
+        from court_vision.pipeline import load_fixed_court
+
+        H = np.array([[0.01, 0.0, -6.4], [0.0, -0.05, 30.0], [0.0, 0.0, 1.0]])  # calibrated on 1280x720
+        path = tmp_path / "court.json"
+        path.write_text(json.dumps({"homography": H.tolist(), "frame_size": [1280, 720], "points": [{"pixel": [640, 360], "court": [0, 12]}]}))
+        same = load_fixed_court(path, 2, (720, 1280))
+        assert len(same) == 2 and all(c.success for c in same)
+        np.testing.assert_allclose(same[0].homography, H)
+        assert same[0].pixel_keypoints == [(640.0, 360.0)]
+        # at half resolution a pixel maps to the same court point as twice the pixel did
+        half = load_fixed_court(path, 1, (360, 640))[0].homography
+        p = half @ np.array([320.0, 180.0, 1.0]); q = H @ np.array([640.0, 360.0, 1.0])
+        np.testing.assert_allclose(p[:2] / p[2], q[:2] / q[2])

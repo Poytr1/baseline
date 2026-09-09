@@ -1,0 +1,113 @@
+{
+ "homography": [
+  [
+   -0.005813903025219984,
+   0.0316488741787595,
+   -8.718959573726218
+  ],
+  [
+   0.004912712523949937,
+   0.055565225231845386,
+   -21.89395232707929
+  ],
+  [
+   2.381580148826506e-06,
+   -0.0038178342832057366,
+   1.0
+  ]
+ ],
+ "frame_size": [
+  1280,
+  720
+ ],
+ "points": [
+  {
+   "name": "SL",
+   "pixel": [
+    811,
+    586
+   ],
+   "court": [
+    -4.115,
+    -11.885
+   ]
+  },
+  {
+   "name": "C",
+   "pixel": [
+    1057,
+    467
+   ],
+   "court": [
+    0,
+    -11.885
+   ]
+  },
+  {
+   "name": "SR",
+   "pixel": [
+    1181,
+    416
+   ],
+   "court": [
+    4.115,
+    -11.885
+   ]
+  },
+  {
+   "name": "NR",
+   "pixel": [
+    1203,
+    406
+   ],
+   "court": [
+    5.485,
+    -11.885
+   ]
+  },
+  {
+   "name": "svcL",
+   "pixel": [
+    402,
+    437
+   ],
+   "court": [
+    -4.115,
+    -6.4
+   ]
+  },
+  {
+   "name": "svcT",
+   "pixel": [
+    657,
+    392
+   ],
+   "court": [
+    0,
+    -6.4
+   ]
+  },
+  {
+   "name": "svcR",
+   "pixel": [
+    791,
+    369
+   ],
+   "court": [
+    4.115,
+    -6.4
+   ]
+  }
+ ],
+ "vanishing_points": {
+  "across": [
+   1536,
+   253
+  ],
+  "along": [
+   -72,
+   262
+  ]
+ },
+ "note": "frame 1200, fixed camera; DLT on near baseline (singles corners, centre mark), near service line and the two vanishing points; pixel -> court metres, near player at negative y"
+}

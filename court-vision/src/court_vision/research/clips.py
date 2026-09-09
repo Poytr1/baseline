@@ -17,8 +17,14 @@ class Clip:
     frames_dir: Path | None = None
     ground_truth: Path | None = None
     stage_labels: Path | None = None
+    calibration: Path | None = None  # fixed-camera court calibration JSON (see pipeline.load_fixed_court)
     notes: str = ""
     extra: dict = field(default_factory=dict)
+
+    @property
+    def single_segment(self) -> bool:
+        """A fixed camera with no cuts: treat the whole video as one gameplay segment."""
+        return bool(self.extra.get("single_segment", False))
 
     @property
     def has_ground_truth(self) -> bool:
@@ -47,8 +53,9 @@ def load_clips(registry: Path | None = None, root: Path | None = None) -> dict[s
             frames_dir=p("frames_dir"),
             ground_truth=p("ground_truth"),
             stage_labels=p("stage_labels"),
+            calibration=p("calibration"),
             notes=str(c.get("notes", "")),
-            extra={k: v for k, v in c.items() if k not in ("video", "frames_dir", "ground_truth", "stage_labels", "notes")},
+            extra={k: v for k, v in c.items() if k not in ("video", "frames_dir", "ground_truth", "stage_labels", "calibration", "notes")},
         )
     return clips
 

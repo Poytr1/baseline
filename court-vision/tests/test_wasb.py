@@ -189,3 +189,22 @@ class TestDetectBallWasb:
             result = detect_ball_wasb(frames, frame_index=0)
 
         assert result is None
+
+
+class TestExtractBallCandidates:
+    def test_every_blob_is_returned_strongest_first(self):
+        from court_vision.wasb import extract_ball_candidates, _extract_ball_position_weighted
+
+        hm = np.zeros((288, 512), dtype=np.float32)
+        hm[100:104, 200:204] = 0.9          # strong blob
+        hm[50:52, 400:402] = 0.6            # weaker blob
+        cands = extract_ball_candidates(hm, 1280, 720, confidence_threshold=0.5, max_candidates=5)
+        assert len(cands) == 2
+        (x1, y1, c1), (x2, y2, c2) = cands
+        assert abs(c1 - 0.9) < 1e-6 and abs(c2 - 0.6) < 1e-6
+        assert abs(x1 - (201.5 / 512) * 1280) < 2 and abs(y1 - (101.5 / 288) * 720) < 2
+        # the single-peak extractor agrees with the first candidate
+        single = _extract_ball_position_weighted(hm, 1280, 720, 0.5)
+        assert abs(single[0] - x1) < 1e-6 and abs(single[1] - y1) < 1e-6
+        assert extract_ball_candidates(hm, 1280, 720, confidence_threshold=0.95) == []
+        assert len(extract_ball_candidates(hm, 1280, 720, 0.5, max_candidates=1)) == 1

@@ -25,7 +25,7 @@ from court_vision.court_detect import compute_segment_homographies
 from court_vision.research.clips import get_clip
 from court_vision.research.keyframes import render_keyframe
 from court_vision.review_data import load_match_json
-from court_vision.serialize import segment_from_dict, tracking_list_from_json
+from court_vision.serialize import court_from_dict, segment_from_dict, tracking_list_from_json
 from court_vision.shot_classify import MatchData
 
 _ROLE_SHORT = {"near_player": "near", "far_player": "far"}
@@ -148,7 +148,10 @@ def render_experiment_video(
     tracking = tracking_list_from_json(json.loads((exp_dir / "tracking_data.json").read_text()))
     by_frame = {t.frame_index: t for t in tracking}
     segments = [segment_from_dict(d) for d in json.loads((exp_dir / "segments.json").read_text())]
-    court = compute_segment_homographies(frames_dir, segments, method=cfg["config"]["pipeline"].get("court_method", "auto"))
+    if (exp_dir / "court.json").exists():  # the homographies the experiment actually used (incl. fixed calibrations)
+        court = [court_from_dict(d) for d in json.loads((exp_dir / "court.json").read_text())]
+    else:
+        court = compute_segment_homographies(frames_dir, segments, method=cfg["config"]["pipeline"].get("court_method", "auto"))
 
     def seg_h(frame: int):
         for i, seg in enumerate(segments):
@@ -179,6 +182,8 @@ def render_experiment_video(
     flash = int(fps * 0.8)
     trail = max(10, int(fps * 0.5))
     points = match.points
+    rally_mode = match.metadata.get("mode") == "rally"
+    unit = "Rally" if rally_mode else "Point"
     for n, f in enumerate(frames):
         img = cv2.imread(str(frames_dir / f"frame_{f:06d}.jpg"))
         if img is None:
@@ -191,7 +196,10 @@ def render_experiment_video(
             winner = point.winner or "unknown"
             src = point.outcome_source or ""
             server = _ROLE_SHORT.get(point.server or "", "?")
-            y += _text(out, f"Point {point.point_number}   server: {server}   t={f / fps:5.1f}s", (12, y), 0.7)
+            n_shots = sum(1 for s in point.shots if s.frame <= f)
+            head = (f"{unit} {point.point_number}   shots: {n_shots}   t={f / fps:5.1f}s" if rally_mode
+                    else f"{unit} {point.point_number}   server: {server}   t={f / fps:5.1f}s")
+            y += _text(out, head, (12, y), 0.7)
             done = [s for s in point.shots if s.frame <= f]
             if done:
                 tokens = [
@@ -225,9 +233,9 @@ def render_experiment_video(
                         _text(out, label, (min(max(12, x1), w - tw - 12), max(30, y1 - 12)), 0.8, color)
                     if t is not None and t.ball is not None:
                         cv2.circle(out, (int(t.ball.x), int(t.ball.y)), 18, color, 3)
-            # winner banner after the last shot / at the end of the point
+            # winner banner after the last shot / at the end of the point (matches only)
             last_shot = point.shots[-1].frame if point.shots else point.start_frame
-            if f >= last_shot + int(fps * 1.0) or f >= point.end_frame - int(fps * 1.5):
+            if not rally_mode and (f >= last_shot + int(fps * 1.0) or f >= point.end_frame - int(fps * 1.5)):
                 label = (f"Point {point.point_number}: {_ROLE_SHORT.get(winner, winner)} wins  [{src}]"
                          if point.winner else f"Point {point.point_number}: winner unknown  [{src}]")
                 col = _ROLE_COLOR.get(winner, (200, 200, 200))

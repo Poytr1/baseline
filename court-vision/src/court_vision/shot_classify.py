@@ -738,13 +738,13 @@ def build_match_data(
                 hist, torso = _wrist_history(by_frame, role, hand, hit.frame, lookback)
                 stroke, stroke_conf = classify_stroke(
                     pose, ball_xy=hit.ball_xy, role=role, hand=hand,
-                    is_first_shot=(shot_num == 1), court_y=court_y,
+                    is_first_shot=(shot_num == 1 and settings.analysis_mode == "match"), court_y=court_y,
                     wrist_history=hist, torso_len=torso,
                     slice_drop_ratio=settings.slice_drop_ratio,
                     volley_max_court_y=settings.volley_max_court_y,
                     slice_min_torso_px=settings.slice_min_torso_px,
                 )
-            elif shot_num == 1:
+            elif shot_num == 1 and settings.analysis_mode == "match":
                 stroke, stroke_conf = "serve", 0.5
 
             placement = None
@@ -789,7 +789,11 @@ def build_match_data(
             for k, s in enumerate(shots, 1):
                 s.shot_number = k
 
-        winner, source_tag = _infer_outcome(hits, start, end, next_start, by_frame, H, fps, settings, scoreboard)
+        if settings.analysis_mode == "rally":
+            # a training exchange: nobody serves and nobody wins
+            winner, source_tag = None, "rally"
+        else:
+            winner, source_tag = _infer_outcome(hits, start, end, next_start, by_frame, H, fps, settings, scoreboard)
         outcome = None
         outcome_player = None
         if shots and winner is not None:
@@ -803,7 +807,7 @@ def build_match_data(
             end_frame=end,
             start_time_s=start / fps,
             end_time_s=end / fps,
-            server=shots[0].player if shots else None,
+            server=(shots[0].player if shots and settings.analysis_mode == "match" else None),
             shots=shots,
             outcome=outcome,
             outcome_player=outcome_player,
@@ -819,6 +823,7 @@ def build_match_data(
             "players": ["near_player", "far_player"],
             "date_processed": str(date.today()),
             "fps": fps,
+            "mode": settings.analysis_mode,
             "handedness": hands,
             "hits": [
                 {"frame": h.frame, "role": h.role, "kind": h.kind, "score": round(h.score, 3),

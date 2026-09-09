@@ -8,6 +8,8 @@ so that tuning a late-stage knob never re-runs neural inference.
 
 from __future__ import annotations
 
+import numpy as np
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -101,6 +103,36 @@ def stage_court(
     return compute_segment_homographies(frame_seq.frames_dir, segments, method=config.pipeline.court_method)
 
 
+def whole_clip_segment(frame_seq: FrameSequence) -> GameplaySegment:
+    """The entire video as one gameplay segment — a fixed camera with no cuts
+    (a phone or action camera on a tripod), where the broadcast-tuned scene
+    filter has nothing to separate and may not recognise the court."""
+    n = frame_seq.total_frames
+    fps = max(frame_seq.fps, 1e-6)
+    return GameplaySegment(start_frame=0, end_frame=n - 1, start_time_s=0.0, end_time_s=(n - 1) / fps, frame_count=n)
+
+
+def load_fixed_court(path: Path, n_segments: int, frame_shape: tuple[int, ...] | None = None) -> list[CourtDetectionResult]:
+    """Court results for a manually calibrated fixed camera.
+
+    The JSON holds ``homography`` (3x3, pixel -> court metres, near player
+    at negative y) computed on frames of ``frame_size`` (width, height);
+    if the pipeline runs at another resolution the homography is rescaled.
+    Broadcast-trained court detectors do not see a court from a low corner
+    camera, so a one-off calibration from the painted lines replaces them.
+    """
+    import json
+
+    data = json.loads(Path(path).read_text())
+    H = np.asarray(data["homography"], dtype=np.float64)
+    size = data.get("frame_size")
+    if size and frame_shape is not None and (int(frame_shape[1]), int(frame_shape[0])) != (int(size[0]), int(size[1])):
+        sx, sy = size[0] / frame_shape[1], size[1] / frame_shape[0]
+        H = H @ np.array([[sx, 0.0, 0.0], [0.0, sy, 0.0], [0.0, 0.0, 1.0]])  # new pixels -> calibration pixels -> court
+    pts = [tuple(float(v) for v in q["pixel"]) for q in data.get("points", [])] or None
+    return [CourtDetectionResult(success=True, homography=H.copy(), pixel_keypoints=pts, num_lines_detected=0) for _ in range(n_segments)]
+
+
 def ball_far_roi_for(
     court_detections: list[CourtDetectionResult] | None,
     index: int,
@@ -183,7 +215,7 @@ def stage_players(
             model_name=p.player_model,
             imgsz=p.player_imgsz,
             conf=p.player_conf,
-            far_crop=p.player_far_crop,
+            far_crop=p.player_far_crop, far_tiles=p.player_far_tiles,
             max_court_x=p.player_max_court_x,
             max_court_y=p.player_max_court_y,
         ))

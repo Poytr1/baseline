@@ -471,7 +471,7 @@ class TestDetectPlayersSegment:
                 model_name="x-pose.pt", imgsz=640, conf=0.3, far_crop=False,
             )
         assert det.call_count == 3  # frames 0, 2, 4
-        assert det.call_args.kwargs == {"model_name": "x-pose.pt", "imgsz": 640, "conf": 0.3, "far_crop": False}
+        assert det.call_args.kwargs == {"model_name": "x-pose.pt", "imgsz": 640, "conf": 0.3, "far_crop": False, "far_tiles": False}
         assert [r.frame_index for r in results] == [0, 1, 2, 3, 4]
         assert [p.frame_index for p in results[1].players] == [1, 1]  # copied forward with the new index
         assert progress == [(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)]
@@ -492,3 +492,26 @@ class TestDetectPlayersSegment:
             results = detect_players_segment(frames_dir, seg, {}, homography=H_LINEAR)
         assert det.call_args.args[1] is H_LINEAR
         assert results[0].players[0].court_position == pytest.approx((0.0, -12.0))
+
+
+class TestFarCropTiles:
+    def test_tiling_is_off_unless_asked(self):
+        import inspect
+        from court_vision.player_detect import detect_persons_with_far_crop, detect_players_segment
+
+        assert inspect.signature(detect_persons_with_far_crop).parameters["far_tiles"].default is False
+        assert inspect.signature(detect_players_segment).parameters["far_tiles"].default is False
+
+    def test_narrow_roi_is_one_tile(self):
+        from court_vision.player_detect import far_crop_tiles
+
+        assert far_crop_tiles(300, 900, 1280) == [(300, 900)]
+
+    def test_wide_roi_is_split_into_overlapping_tiles(self):
+        from court_vision.player_detect import far_crop_tiles
+
+        tiles = far_crop_tiles(0, 905, 1280)
+        assert len(tiles) == 2
+        assert tiles[0][0] == 0 and tiles[-1][1] == 905
+        assert tiles[0][1] > tiles[1][0]                     # neighbours overlap
+        assert all(t2 - t1 <= 0.5 * 1280 * 1.25 for t1, t2 in tiles)  # each gets ≥2x zoom at imgsz 1280

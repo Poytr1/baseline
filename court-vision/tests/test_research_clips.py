@@ -88,3 +88,18 @@ class TestClipDataclass:
         c = Clip(name="x", video=tmp_path / "x.mp4")
         assert c.has_ground_truth is False
         assert c.extra == {} and c.notes == ""
+
+
+class TestFixedCameraOptions:
+    def test_calibration_path_and_single_segment(self, tmp_path: Path):
+        reg = tmp_path / "research" / "clips.yaml"
+        reg.parent.mkdir()
+        reg.write_text(
+            "clips:\n  cam:\n    video: data/cam.mov\n    calibration: data/cam_court.json\n    single_segment: true\n"
+            "  tv:\n    video: data/tv.mp4\n"
+        )
+        clips = load_clips(reg)
+        assert clips["cam"].calibration == tmp_path / "data" / "cam_court.json"
+        assert clips["cam"].single_segment is True
+        assert "calibration" not in clips["cam"].extra
+        assert clips["tv"].calibration is None and clips["tv"].single_segment is False

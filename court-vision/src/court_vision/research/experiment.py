@@ -34,7 +34,7 @@ from court_vision.research.review import write_review_packet
 from court_vision.research.runner import RunArtifacts, StageCache, run_clip
 from court_vision.research.scorecard import Scorecard, score_run
 from court_vision.review_data import load_match_json
-from court_vision.serialize import tracking_list_to_json
+from court_vision.serialize import court_to_dict, tracking_list_to_json
 from court_vision.shot_classify import MatchData
 
 DEFAULT_ROOT = Path("runs")
@@ -107,6 +107,7 @@ def run_experiment(
     export_json(art.match_data, exp_dir / "match_data.json")
     (exp_dir / "tracking_data.json").write_text(json.dumps(tracking_list_to_json(art.tracking)))
     (exp_dir / "segments.json").write_text(json.dumps([s.__dict__ for s in art.segments], indent=2))
+    (exp_dir / "court.json").write_text(json.dumps([court_to_dict(c) for c in art.court], indent=1))
     if art.scoreboard is not None:
         (exp_dir / "scoreboard.json").write_text(json.dumps({
             "roi": art.scoreboard.roi,

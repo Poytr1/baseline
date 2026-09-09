@@ -381,6 +381,46 @@ class WASBHRNet(nn.Module):
         return y_out
 
 
+def extract_ball_candidates(
+    heatmap: np.ndarray,
+    original_width: int,
+    original_height: int,
+    confidence_threshold: float = 0.5,
+    max_candidates: int = 5,
+) -> list[tuple[float, float, float]]:
+    """Every heatmap blob above threshold, strongest first.
+
+    Same connected-component / weighted-centroid extraction as
+    :func:`_extract_ball_position_weighted`, but all components are kept
+    (up to ``max_candidates``, ranked by their summed heat) and each gets
+    its own peak value as confidence. On a court with loose balls lying
+    around the strongest blob is often one of them; the trajectory stage
+    picks the motion-consistent path through these candidates instead.
+
+    Returns:
+        List of (x, y, confidence) in original frame coordinates.
+    """
+    if float(np.max(heatmap)) < confidence_threshold:
+        return []
+    binary = (heatmap > confidence_threshold).astype(np.uint8)
+    n_labels, labels = cv2.connectedComponents(binary)
+    hm_h, hm_w = heatmap.shape
+    found = []
+    for label in range(1, n_labels):
+        ys, xs = np.where(labels == label)
+        if xs.size == 0:
+            continue
+        weights = heatmap[ys, xs]
+        total = float(weights.sum())
+        if total <= 0.0:
+            continue
+        x = float(np.sum(xs * weights) / total) / hm_w * original_width
+        y = float(np.sum(ys * weights) / total) / hm_h * original_height
+        found.append((x, y, float(weights.max()), total))
+    found.sort(key=lambda c: -c[3])
+    return [(x, y, peak) for x, y, peak, _ in found[:max_candidates]]
+
+
 def _extract_ball_position_weighted(
     heatmap: np.ndarray,
     original_width: int,
@@ -504,6 +544,48 @@ def _get_wasb_model() -> WASBHRNet:
     return model
 
 
+def _wasb_heatmap(frames: list[np.ndarray]) -> tuple[np.ndarray, int, int]:
+    """Run WASB on a 3-frame window; the current frame's sigmoided heatmap
+    plus the original frame size."""
+    if len(frames) != 3:
+        raise ValueError(f"detect_ball_wasb requires exactly 3 frames, got {len(frames)}")
+
+    original_height, original_width = frames[0].shape[:2]
+    device = get_device()
+    model = _get_wasb_model()
+
+    processed = []
+    for frame in frames:
+        resized = cv2.resize(frame, (WASB_WIDTH, WASB_HEIGHT))
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        processed.append(rgb)
+
+    concatenated = np.concatenate(processed, axis=2)  # (H, W, 9)
+    tensor = torch.from_numpy(concatenated).permute(2, 0, 1).float() / 255.0
+    tensor = tensor.unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        output_dict = model(tensor)
+    logits = output_dict[0]  # (1, 3, 288, 512)
+    heatmap = torch.sigmoid(logits[0, 2]).cpu().numpy()  # current frame channel
+    return heatmap, original_width, original_height
+
+
+def detect_ball_candidates_wasb(
+    frames: list[np.ndarray],
+    frame_index: int,
+    confidence_threshold: float = 0.5,
+    max_candidates: int = 5,
+) -> list[BallDetection]:
+    """Like :func:`detect_ball_wasb` but every blob above threshold, strongest
+    first (see :func:`extract_ball_candidates`)."""
+    heatmap, w, h = _wasb_heatmap(frames)
+    return [
+        BallDetection(frame_index=frame_index, x=x, y=y, confidence=c)
+        for x, y, c in extract_ball_candidates(heatmap, w, h, confidence_threshold, max_candidates)
+    ]
+
+
 def detect_ball_wasb(
     frames: list[np.ndarray],
     frame_index: int,
@@ -526,28 +608,7 @@ def detect_ball_wasb(
     Raises:
         ValueError: If not exactly 3 frames provided.
     """
-    if len(frames) != 3:
-        raise ValueError(f"detect_ball_wasb requires exactly 3 frames, got {len(frames)}")
-
-    original_height, original_width = frames[0].shape[:2]
-    device = get_device()
-    model = _get_wasb_model()
-
-    processed = []
-    for frame in frames:
-        resized = cv2.resize(frame, (WASB_WIDTH, WASB_HEIGHT))
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        processed.append(rgb)
-
-    concatenated = np.concatenate(processed, axis=2)  # (H, W, 9)
-    tensor = torch.from_numpy(concatenated).permute(2, 0, 1).float() / 255.0
-    tensor = tensor.unsqueeze(0).to(device)
-
-    with torch.no_grad():
-        output_dict = model(tensor)
-    logits = output_dict[0]  # (1, 3, 288, 512)
-    heatmap = torch.sigmoid(logits[0, 2]).cpu().numpy()  # current frame channel
-
+    heatmap, original_width, original_height = _wasb_heatmap(frames)
     result = _extract_ball_position_weighted(
         heatmap, original_width, original_height, confidence_threshold,
     )

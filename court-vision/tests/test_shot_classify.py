@@ -706,3 +706,32 @@ class TestBuildMatchData:
         assert a.match_id == b.match_id
         assert a.match_id != c.match_id
         assert len(a.match_id) == 12
+
+
+class TestRallyMode:
+    def _tracking(self):
+        """Two contacts 1 s apart: the near player then the far player."""
+        out = []
+        for frame, role, y in ((10, "near_player", 600.0), (40, "far_player", 150.0)):
+            bbox = (300.0, y - 150.0, 400.0, y) if role == "near_player" else (300.0, y - 60.0, 340.0, y)
+            out.append(FrameTrackingResult(
+                frame_index=frame,
+                ball=BallDetection(frame_index=frame, x=350.0, y=y - 80.0, confidence=0.9),
+                players=[PlayerDetection(frame_index=frame, bbox=bbox, confidence=0.9, role=role, court_position=(0.0, -12.0 if role == "near_player" else 12.0))],
+                poses=[],
+            ))
+        return out
+
+    def test_rally_mode_has_no_serve_server_or_winner(self):
+        from court_vision.config import PipelineSettings
+        seg = GameplaySegment(start_frame=0, end_frame=60, start_time_s=0.0, end_time_s=2.0, frame_count=61)
+        tracking = self._tracking()
+        match_mode = build_match_data("v", [seg], tracking, 30.0, settings=PipelineSettings(contact_method="proximity", analysis_mode="match"))
+        rally = build_match_data("v", [seg], tracking, 30.0, settings=PipelineSettings(contact_method="proximity", analysis_mode="rally"))
+        assert rally.metadata["mode"] == "rally"
+        assert rally.points and rally.points[0].shots
+        assert all(s.stroke != "serve" for s in rally.points[0].shots)
+        assert rally.points[0].winner is None and rally.points[0].outcome_source == "rally"
+        assert rally.points[0].server is None
+        # the match mode on the same data calls the first shot a serve
+        assert match_mode.points[0].shots[0].stroke == "serve"
