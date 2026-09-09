@@ -178,3 +178,28 @@ class TestSaveMatchJson:
             raw = json.load(f)
 
         assert raw["points"][0]["review_status"] == "corrected"
+
+
+class TestShotContactAndBounceRoundTrip:
+    def test_contact_and_bounce_frame_survive_json(self, tmp_path):
+        from dataclasses import asdict
+        from court_vision.review_data import load_match_json
+
+        shot = Shot(shot_number=1, frame=10, time_s=0.33, player="near_player", stroke="forehand",
+                    placement=ShotPlacement(x=1.0, y=8.0, zone="crosscourt_deep"), confidence=0.9,
+                    speed_kmh=112.0, contact=(-0.5, -12.3), bounce_frame=40)
+        match = MatchData(match_id="t", source_url="", metadata={}, points=[Point(point_number=1, start_frame=0, end_frame=100, start_time_s=0.0,
+                                        end_time_s=3.3, server="near_player", rally_length=1, winner=None, outcome=None,
+                                        outcome_player=None, shots=[shot])])
+        path = tmp_path / "match_data.json"
+        path.write_text(json.dumps(asdict(match)))
+        back = load_match_json(path).points[0].shots[0]
+        assert back.contact == (-0.5, -12.3)
+        assert back.bounce_frame == 40
+        # older files without the fields still load
+        raw = json.loads(path.read_text())
+        del raw["points"][0]["shots"][0]["contact"]
+        del raw["points"][0]["shots"][0]["bounce_frame"]
+        path.write_text(json.dumps(raw))
+        back = load_match_json(path).points[0].shots[0]
+        assert back.contact is None and back.bounce_frame is None

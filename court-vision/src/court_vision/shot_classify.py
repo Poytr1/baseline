@@ -44,7 +44,9 @@ class Shot:
     stroke: str  # forehand, backhand, serve, volley, overhead, slice
     placement: ShotPlacement | None
     confidence: float
-    speed_kmh: float | None = None  # average speed to the net (see ball_speed.py)
+    speed_kmh: float | None = None  # average speed from contact to the first bounce (see ball_speed.py)
+    contact: tuple[float, float] | None = None  # hitter's feet at contact, court metres
+    bounce_frame: int | None = None  # frame of the first bounce; ``placement`` is where
 
 
 @dataclass
@@ -747,12 +749,15 @@ def build_match_data(
 
             placement = None
             speed = None
+            feet = None
+            bounce_frame = None
             if H is not None:
                 nxt = hits[shot_num].frame if shot_num < len(hits) else min(end, hit.frame + int(2.5 * fps))
                 feet = player.court_position if (player and player.court_position) else None
                 landing_f = estimate_bounce(by_frame, hit.frame, nxt, H, fps, hitter_role=role, with_frame=True)
                 landing = landing_f[:2] if landing_f else None
                 if landing_f is not None:
+                    bounce_frame = int(landing_f[2])
                     est = bounce_speed(feet, landing_f, hit.frame, fps, by_frame, H)
                     speed = est.kmh if est else None
                 if landing is not None:
@@ -770,6 +775,8 @@ def build_match_data(
                 placement=placement,
                 confidence=stroke_conf,
                 speed_kmh=speed,
+                contact=(float(feet[0]), float(feet[1])) if feet is not None else None,
+                bounce_frame=bounce_frame,
             ))
 
         # A point starts with the serve: whatever the hit detector saw in the

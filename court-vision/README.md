@@ -56,7 +56,7 @@ court-vision research sweep research/sweeps/contacts.yaml
 court-vision research leaderboard
 court-vision research feedback add vienna7s --frame 182 --stroke forehand
 court-vision research dataset fetch court && court-vision research dataset eval-court
-court-vision research render runs/experiments/<dir> -o annotated.mp4   # strokes, speeds, winners on video
+court-vision research render runs/experiments/<dir> -o annotated.mp4   # strokes, speeds, winners, top-down court map
 ```
 
 See [docs/research-harness.md](docs/research-harness.md) for the loop,
@@ -70,7 +70,8 @@ cross-validation.
 `outcome_source` (`scoreboard` / `trajectory` / `unknown`) and `shots[]`
 (`frame`, `player`, `stroke` ∈ forehand / backhand / serve / volley /
 overhead / slice, `placement`, `confidence`, `speed_kmh` — average speed
-from contact to the first bounce, empty when no bounce is visible). `metadata.hits` keeps the raw
+from contact to the first bounce, empty when no bounce is visible, `contact` — the hitter's
+feet at contact in court metres, `bounce_frame`). `metadata.hits` keeps the raw
 hit-detector evidence for each shot.
 
 ## Development
