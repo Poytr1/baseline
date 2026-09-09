@@ -902,6 +902,22 @@ class TestSelectBallPath:
         path = select_ball_path(cands, fps=60.0, max_speed_px_per_frame=75.0)
         assert len(path) == 80                                             # both halves kept
 
+    def test_a_drifting_blob_on_the_next_court_is_not_followed(self):
+        """Our ball crosses the patch of the picture where a ball on the next
+        court creeps along at 1 px/frame with a stronger blob: the path must
+        keep our ball's velocity, not hop onto the creeping one."""
+        from court_vision.trajectory import select_ball_path
+
+        cands = []
+        for f in range(90):
+            ours = _det(f, 1100.0 - 12.0 * f, 250.0, 0.65)          # 12 px/frame leftward through the middle
+            theirs = _det(f, 620.0 + 1.0 * f, 255.0, 0.9)            # creeping, stronger
+            c = [ours, theirs] if not 38 <= f < 44 else [theirs]    # ours missed for 6 frames as it passes
+            cands.append(sorted(c, key=lambda d: -d.confidence))
+        path = select_ball_path(cands, fps=60.0, max_speed_px_per_frame=75.0)
+        assert all(d.confidence == 0.65 for d in path), "hopped onto the creeping ball"
+        assert len(path) == 84
+
     def test_a_jump_over_the_cap_is_not_followed(self):
         from court_vision.trajectory import select_ball_path
 

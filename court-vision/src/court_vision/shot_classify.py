@@ -746,6 +746,8 @@ def build_match_data(
                 )
             elif shot_num == 1 and settings.analysis_mode == "match":
                 stroke, stroke_conf = "serve", 0.5
+            if settings.analysis_mode == "rally" and stroke == "serve":
+                stroke = "overhead"  # nobody serves in a rally drill: an overhead contact is a smash
 
             placement = None
             speed = None

@@ -52,8 +52,9 @@ def draw_minimap(
     scale_px_m: float = 9.0,
     margin: int = 16,
     pad: int = 26,
+    anchor: str = "right",
 ):
-    """Top-down court in the bottom-right corner (near player at the bottom,
+    """Top-down court in a bottom corner (``anchor`` right or left; near player at the bottom,
     like the camera): the players' feet now (ringed dots), and for the point
     so far where each shot was hit from (numbered dot, matching the rally
     strip) and where it first bounced (cross), in the hitter's colour. The
@@ -65,8 +66,8 @@ def draw_minimap(
     h, w = img.shape[:2]
     cw, ch = int(round(2 * _DOUBLES * scale_px_m)), int(round(2 * _BASE * scale_px_m))
     pw, ph = cw + 2 * pad, ch + 2 * pad
-    x0, y0 = w - margin - pw, h - margin - ph
-    if x0 < 0 or y0 < 0:
+    x0, y0 = (w - margin - pw if anchor == "right" else margin), h - margin - ph
+    if x0 < 0 or y0 < 0 or x0 + pw > w:
         return img
     roi = img[y0:y0 + ph, x0:x0 + pw]
     panel = roi.copy()
@@ -184,13 +185,17 @@ def render_experiment_video(
     points = match.points
     rally_mode = match.metadata.get("mode") == "rally"
     unit = "Rally" if rally_mode else "Point"
+    # the corner map goes bottom-right unless the near player mostly stands
+    # there (a corner camera): then bottom-left, decided once for the video
+    near_x = [(p.bbox[0] + p.bbox[2]) / 2 for t in tracking for p in t.players if p.role == "near_player"]
+    map_anchor = "left" if near_x and sum(1 for x in near_x if x > 0.7 * w) > 0.5 * len(near_x) else "right"
     for n, f in enumerate(frames):
         img = cv2.imread(str(frames_dir / f"frame_{f:06d}.jpg"))
         if img is None:
             continue
         out = render_keyframe(img, by_frame, f, homography=seg_h(f), trail=trail)
         point = next((p for p in points if p.start_frame <= f <= p.end_frame), None)
-        draw_minimap(out, point, f, by_frame)
+        draw_minimap(out, point, f, by_frame, anchor=map_anchor)
         y = 30
         if point is not None:
             winner = point.winner or "unknown"

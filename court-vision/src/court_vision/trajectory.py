@@ -122,28 +122,35 @@ def select_ball_path(
     fps: float,
     max_speed_px_per_frame: float,
     max_gap_frames: int | None = None,
-    skip_penalty: float = 0.15,
-    jump_weight: float = 1.0,
-    restart_penalty: float = 2.0,
-    static_penalty: float = 0.5,
+    skip_penalty: float = 0.1,
+    jump_weight: float = 1.5,
+    restart_penalty: float = 3.0,
+    static_penalty: float = 0.8,
     static_window_s: float = 0.5,
     static_min_frac: float = 0.5,
-    static_px: float = 3.0,
+    static_px: float = 8.0,
+    velocity_weight: float = 0.85,
 ) -> list[BallDetection]:
     """One detection per frame (or none) through per-frame candidates: the
     path that maximises confidence minus motion cost.
 
     Scoring, summed along the path: each chosen candidate adds its
-    confidence, less ``static_penalty`` if a candidate stands on the same
-    pixels for most of ``static_window_s`` around it (a ball on the ground,
-    not the ball in play — the smoothest path of all would otherwise be to
-    sit on it). A step between chosen candidates ``g`` frames apart costs
-    ``jump_weight`` times its speed as a fraction of the cap (steps over the
-    cap are not allowed) plus ``skip_penalty`` per skipped frame; a longer
-    silence, or a jump the cap forbids, costs ``restart_penalty`` instead.
-    Solved exactly by dynamic programming; the winner is the ball in play
-    because it is the only thing that both keeps being detected and moves
-    like a ball.
+    confidence, less ``static_penalty`` if a candidate stands within
+    ``static_px`` of the same spot for most of ``static_window_s`` around
+    it (a ball on the ground, not the ball in play — the smoothest path of
+    all would otherwise be to sit on it). A step between chosen candidates
+    ``g`` frames apart costs ``jump_weight`` times a blend of its speed and,
+    weighted ``velocity_weight``, its deviation from where the previous
+    step's velocity predicted the ball — both as fractions of the cap —
+    plus ``skip_penalty`` per skipped frame; steps over the cap are not
+    allowed. A longer silence, or a jump the cap forbids, costs
+    ``restart_penalty`` instead. The velocity term is what keeps the path
+    from hopping onto a ball on the next court while ours crosses the same
+    patch of the picture: that ball is not moving the way ours was.
+    Solved by dynamic programming (the velocity of a state is the one its
+    own best predecessor gave it); the winner is the ball in play because
+    it is the only thing that both keeps being detected and moves like a
+    ball.
     """
     frames = [i for i, c in enumerate(candidates) if c]
     if not frames:
@@ -159,32 +166,46 @@ def select_ball_path(
         # a candidate that has been (or will be) on the same pixels for most of
         # a window is standing still: look both ways so the discount also
         # applies at the start of a clip, before the path has any history
-        around = [np.array([(d.x, d.y) for d in candidates[k]])
-                  for k in range(max(0, i - win), min(len(candidates), i + win + 1)) if k != i and candidates[k]]
-        if around:
-            allp = np.vstack(around)
-            for j in range(len(pts)):
-                near = np.sum(np.all(np.abs(allp - pts[j]) <= static_px, axis=1))
-                if near >= static_min_frac * win:
-                    conf[j] -= static_penalty
+        # ... and on both sides: a ball in play that passes a resting ball is
+        # near it only on one side of the crossing, the resting ball on both
+        before = [np.array([(d.x, d.y) for d in candidates[k]]) for k in range(max(0, i - win), i) if candidates[k]]
+        after = [np.array([(d.x, d.y) for d in candidates[k]]) for k in range(i + 1, min(len(candidates), i + win + 1)) if candidates[k]]
+        need = static_min_frac * win / 2.0
+        for j in range(len(pts)):
+            counts = []
+            for side, span in ((before, i), (after, len(candidates) - 1 - i)):
+                if span < win / 2.0:      # too close to the start/end of the clip to judge this side
+                    counts.append(need)
+                elif side:
+                    allp = np.vstack(side)
+                    counts.append(np.sum(np.all(np.abs(allp - pts[j]) <= static_px, axis=1)))
+                else:
+                    counts.append(0)
+            if min(counts) >= need:
+                conf[j] -= static_penalty
         emit[i], pos[i] = conf, pts
     # dynamic programming over (frame, candidate)
     best: dict[int, np.ndarray] = {}
     back: dict[int, list[tuple[int, int] | None]] = {}
+    vel: dict[int, np.ndarray] = {}   # velocity (px/frame) each state inherited from its best predecessor
     run_max = -np.inf   # best score of any state so far (for restarts)
     run_arg: tuple[int, int] | None = None
     for i in frames:
         n = len(pos[i])
         score = np.full(n, -np.inf)
         prev_state: list[tuple[int, int] | None] = [None] * n
+        v_new = np.zeros((n, 2))
         # start fresh, or restart after a long loss / an illegal jump
         base = 0.0 if run_arg is None else max(0.0, run_max - restart_penalty)
         score[:] = base
         prev_state = [run_arg if (run_arg is not None and run_max - restart_penalty >= 0.0) else None] * n
         for k in frames_before(frames, i, gap):
             g = i - k
-            d = np.linalg.norm(pos[i][:, None, :] - pos[k][None, :, :], axis=2) / g  # (n_i, n_k)
-            cost = jump_weight * d / max_speed_px_per_frame + skip_penalty * (g - 1)
+            delta = pos[i][:, None, :] - pos[k][None, :, :]                       # (n_i, n_k, 2)
+            d = np.linalg.norm(delta, axis=2) / g                                  # plain speed
+            dev = np.linalg.norm(delta - vel[k][None, :, :] * g, axis=2) / g       # deviation from the predicted spot
+            motion = (1.0 - velocity_weight) * d + velocity_weight * dev
+            cost = jump_weight * motion / max_speed_px_per_frame + skip_penalty * (g - 1)
             cost[d > max_speed_px_per_frame] = np.inf
             cand = best[k][None, :] - cost  # (n_i, n_k)
             kbest = np.argmax(cand, axis=1)
@@ -193,9 +214,15 @@ def select_ball_path(
                 if v > score[j]:
                     score[j] = v
                     prev_state[j] = (k, int(kbest[j]))
+                    # a step that broke with the previous velocity (a hit, a
+                    # bounce, a hop between objects) leaves the velocity
+                    # unknown rather than remembering the jump
+                    smooth = dev[j, kbest[j]] <= 0.25 * max_speed_px_per_frame
+                    v_new[j] = delta[j, kbest[j]] / g if smooth else 0.0
         score = score + emit[i]
         best[i] = score
         back[i] = prev_state
+        vel[i] = v_new
         j = int(np.argmax(score))
         if score[j] > run_max:
             run_max, run_arg = float(score[j]), (i, j)

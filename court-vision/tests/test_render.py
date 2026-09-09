@@ -42,3 +42,9 @@ class TestDrawMinimap:
         img = np.zeros((100, 100, 3), dtype=np.uint8)
         draw_minimap(img, _point(), 50, _tracking(50))
         assert img.max() == 0
+
+    def test_left_anchor_draws_bottom_left(self):
+        img = np.zeros((720, 1280, 3), dtype=np.uint8)
+        draw_minimap(img, _point(), 50, _tracking(50), anchor="left")
+        assert img[400:, :300].max() > 0
+        assert img[400:, 1000:].max() == 0

@@ -279,8 +279,15 @@ Loose balls lie on the court, and the single strongest heatmap peak keeps
 flipping between the ball in play and them — the raw track shattered into
 700 two-frame runs. `ball_candidates: 5` keeps the top blobs per frame and
 `select_ball_path` picks one path through them by dynamic programming
-(confidence minus motion cost, a discount for blobs that stand still for
-half a second), before the usual cleaning. And the far player, seen edge
+before the usual cleaning: confidence, minus a motion cost that weighs
+the deviation from where the previous step's velocity predicted the ball
+far more than plain displacement, minus a discount for blobs that stand
+still for half a second on both sides of a frame (a ball in play passing
+a resting ball is near it on one side only). The velocity term is what
+stops the path hopping onto a ball on the next court while ours crosses
+the same patch of the picture — that ball is not moving the way ours was
+— and a step that breaks with the previous velocity (a hit, a bounce)
+leaves the velocity unknown rather than remembering the jump. And the far player, seen edge
 on, is a box a third as wide as it is tall, so the hit gate now grows a
 box sideways by the larger of its width and three quarters of its height
 (racket reach), and the "ball moves away from the hitter" test has a
