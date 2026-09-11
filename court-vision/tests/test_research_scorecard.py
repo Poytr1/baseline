@@ -97,14 +97,14 @@ class TestScoreRunWithoutGroundTruth:
         ]
         sc = score_run("clipA", None, _match([]), tracking, [GameplaySegment(0, 3, 0.0, 0.1, 4)], [True, False], FPS)
         assert sc.clip == "clipA"
-        assert sc.ball_coverage == pytest.approx(0.5)
-        assert sc.ball_coverage_any == pytest.approx(0.75)
+        assert sc.ball_coverage == pytest.approx(0.75)      # any ball, interpolated included
+        assert sc.ball_coverage_real == pytest.approx(0.5)  # real detections only
         assert sc.players_both_rate == pytest.approx(0.5)
         assert sc.court_success_rate == pytest.approx(0.5)
         assert sc.gt_points == 0 and sc.pred_points == 0 and sc.shot_f1 == 0.0
         assert any("no ground truth" in n for n in sc.notes)
         assert sc.score == pytest.approx(_composite(sc, has_gt=False))
-        assert sc.score == pytest.approx(0.6 * 0.5 + 0.3 * 0.5 + 0.1 * 0.5)
+        assert sc.score == pytest.approx(0.6 * 0.75 + 0.3 * 0.5 + 0.1 * 0.5)  # coverage counts interpolated frames
 
     def test_empty_tracking_and_court(self):
         sc = score_run("clipA", None, _match([]), [], [], [], FPS)

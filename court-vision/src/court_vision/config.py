@@ -33,6 +33,14 @@ class PipelineSettings(BaseModel):
     ball_confidence_threshold: float = 0.3
     ball_frame_step: int | Literal["auto"] = "auto"  # temporal gap of the 3-frame window (auto = fps/30)
     ball_far_crop: bool = True  # second detector pass on an upscaled far-court crop
+    # Two speed knobs that are off by default because both cost hit accuracy on
+    # the labelled 60 fps clip (gate: F1 1.0 -> 0.89; stride 2: -> 0.81): the
+    # far pass gated on the full frame drops far-court detections at contact,
+    # and sub-sampling inside a 60 fps timeline starves the hit detector's
+    # velocity windows. 30 fps processing of 60 fps sources should be done by
+    # sub-sampling at ingest (a 30 fps timeline end to end), not here.
+    ball_far_crop_gate: bool = False  # run the far pass only when the full frame lost the ball or has it in the far court
+    ball_detect_stride: int | Literal["auto"] = 1  # run the ball detector every N source frames (auto = fps/30)
     ball_candidates: int = 1  # >1: keep this many heatmap peaks per frame and pick the motion-consistent path (courts with loose balls)
     ball_max_speed_px: float = 150.0  # per 30fps-frame; scaled by fps
     ball_max_gap_s: float = 0.5
@@ -101,8 +109,9 @@ STAGE_PARAMS: dict[str, tuple[str, ...]] = {
     "ingest": ("target_resolution", "fps_override"),
     "scene": ("gameplay_threshold", "scene_filter_stride", "scene_smooth_window", "min_segment_s"),
     "court": ("court_method",),
-    "ball": ("ball_detection_method", "ball_confidence_threshold", "ball_frame_step", "ball_far_crop", "ball_candidates"),
-    "ball_post": ("ball_max_speed_px", "ball_max_gap_s", "ball_smooth_window",
+    "ball": ("ball_detection_method", "ball_confidence_threshold", "ball_frame_step", "ball_far_crop", "ball_far_crop_gate",
+             "ball_detect_stride", "ball_candidates"),
+    "ball_post": ("ball_detect_stride", "ball_max_speed_px", "ball_max_gap_s", "ball_smooth_window",
                   "ball_stationary_std_px", "ball_strong_confidence",
                   "ball_min_run_s"),
     "players": ("player_model", "player_imgsz", "player_conf", "player_detect_stride",

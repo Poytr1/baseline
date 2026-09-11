@@ -10,9 +10,9 @@ from __future__ import annotations
 from dataclasses import asdict
 import numpy as np
 
-from court_vision.ball_tracker import BallDetection
+from court_vision.trajectory import BallDetection
 from court_vision.court_detect import CourtDetectionResult
-from court_vision.player_detect import FrameTrackingResult, PlayerDetection, PoseKeypoints
+from court_vision.types import FrameTrackingResult, PlayerDetection, PoseKeypoints
 from court_vision.scene_filter import GameplaySegment
 
 

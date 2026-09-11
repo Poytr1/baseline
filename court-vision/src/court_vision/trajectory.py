@@ -97,24 +97,66 @@ def court_gate(
     baseline = [px(-5.485, 11.885), px(5.485, 11.885), px(-5.485, 0.0), px(5.485, 0.0)]
     if any(p is None for p in quad + far + baseline):
         return list(detections)
-    import cv2
-
-    poly = np.array(quad, dtype=np.float32)
+    poly = np.array(quad, dtype=np.float64)
     ys = [p[1] for p in baseline]
     lift = far_lift * (max(ys) - min(ys))
-    prism = np.array(far + [(x, y - lift) for x, y in far], dtype=np.float32)
+    prism = np.array(far + [(x, y - lift) for x, y in far], dtype=np.float64)
     if frame_shape is not None:
         h, w = frame_shape[:2]
         prism[:, 0] = np.clip(prism[:, 0], 0.0, float(w))
         prism[:, 1] = np.clip(prism[:, 1], 0.0, float(h))
-    hull = cv2.convexHull(prism)
+    hull = convex_hull(prism)
 
     kept = []
     for d in detections:
         pt = (float(d.x), float(d.y))
-        if cv2.pointPolygonTest(poly, pt, False) >= 0 or cv2.pointPolygonTest(hull, pt, False) >= 0:
+        if point_in_polygon(pt, poly) or point_in_polygon(pt, hull):
             kept.append(d)
     return kept
+
+
+def convex_hull(points: np.ndarray) -> np.ndarray:
+    """Convex hull (Andrew's monotone chain), counter-clockwise, no OpenCV."""
+    pts = sorted({(float(x), float(y)) for x, y in points})
+    if len(pts) <= 2:
+        return np.array(pts, dtype=np.float64)
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list[tuple[float, float]] = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper: list[tuple[float, float]] = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return np.array(lower[:-1] + upper[:-1], dtype=np.float64)
+
+
+def point_in_polygon(pt: tuple[float, float], poly: np.ndarray, eps: float = 1e-9) -> bool:
+    """Ray casting, points on an edge count as inside (matches
+    ``cv2.pointPolygonTest(..., False) >= 0``)."""
+    x, y = pt
+    n = len(poly)
+    if n < 3:
+        return False
+    inside = False
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        # on the segment?
+        cross = (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)
+        if abs(cross) <= eps * max(1.0, abs(x2 - x1) + abs(y2 - y1)) and min(x1, x2) - eps <= x <= max(x1, x2) + eps and min(y1, y2) - eps <= y <= max(y1, y2) + eps:
+            return True
+        if (y1 > y) != (y2 > y):
+            x_int = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if x < x_int:
+                inside = not inside
+    return inside
 
 
 def select_ball_path(
@@ -301,6 +343,7 @@ def build_runs(
     max_gap_frames: int | None = None,
     gap_speed_ratio: float = 4.0,
     gap_speed_floor: float = 3.0,
+    sample_stride: int = 1,
 ) -> list[list[BallDetection]]:
     """Group consecutive detections into physically continuous runs.
 
@@ -314,6 +357,7 @@ def build_runs(
     """
     runs: list[list[BallDetection]] = []
     n = len(detections)
+    base_gap = max(1, int(sample_stride))
     for i, det in enumerate(detections):
         if not runs:
             runs.append([det])
@@ -322,7 +366,7 @@ def build_runs(
         gap = det.frame_index - prev.frame_index
         step = _speed(prev, det)
         ok = step <= max_speed_px_per_frame and (max_gap_frames is None or gap <= max_gap_frames)
-        if ok and gap >= 2:
+        if ok and gap > base_gap:
             local = []
             if len(runs[-1]) >= 2:
                 local.append(_speed(runs[-1][-2], prev))
@@ -343,6 +387,7 @@ def build_tracks(
     max_gap_frames: int,
     gap_speed_ratio: float = 4.0,
     gap_speed_floor: float = 3.0,
+    sample_stride: int = 1,
 ) -> list[list[BallDetection]]:
     """Like :func:`build_runs`, but several tracks may be open at once.
 
@@ -355,6 +400,7 @@ def build_tracks(
     Tracks are returned in order of their first frame.
     """
     tracks: list[list[BallDetection]] = []
+    base_gap = max(1, int(sample_stride))
     for det in detections:
         best, best_step = None, None
         for tr in tracks:
@@ -365,7 +411,7 @@ def build_tracks(
             step = _speed(prev, det)
             if step > max_speed_px_per_frame:
                 continue
-            if gap >= 2 and len(tr) >= 2:
+            if gap > base_gap and len(tr) >= 2:
                 local = _speed(tr[-2], prev)
                 if step > gap_speed_ratio * max(local, gap_speed_floor):
                     continue
@@ -411,6 +457,7 @@ def reject_velocity_outliers(
     stutter_px: float = 1.5,
     stutter_frac: float = 0.4,
     alternation_frac: float = 0.05,
+    sample_stride: int = 1,
 ) -> list[BallDetection]:
     """Keep the ball's track and drop the blips.
 
@@ -446,6 +493,8 @@ def reject_velocity_outliers(
         stutter_frac: A run shorter than ``blip_max_s`` standing still this often is dropped.
         alternation_frac: When more than this fraction of consecutive steps break the cap
             (several balls in view), detections are grouped with :func:`build_tracks`.
+        sample_stride: The detector's regular frame gap (2 when a 60 fps clip is
+            processed at 30 fps); rules about missing samples key off it.
     """
     if len(detections) < 2:
         return list(detections)
@@ -457,14 +506,15 @@ def reject_velocity_outliers(
     # between several balls, most consecutive steps break the speed cap;
     # then let several tracks stay open at once and sort them out after.
     gap_frames = max(2, int(round(fps / 2.0)))
-    steps = [_speed(a, b) for a, b in zip(detections, detections[1:]) if b.frame_index - a.frame_index == 1]
+    base_gap = max(1, int(sample_stride))
+    steps = [_speed(a, b) for a, b in zip(detections, detections[1:]) if b.frame_index - a.frame_index == base_gap]
     violations = sum(1 for v in steps if v > max_speed_px_per_frame)
     alternating = violations >= 20 and violations > alternation_frac * len(steps)
     if alternating:
-        runs = build_tracks(detections, max_speed_px_per_frame, max_gap_frames=gap_frames)
+        runs = build_tracks(detections, max_speed_px_per_frame, max_gap_frames=gap_frames, sample_stride=base_gap)
     else:
-        runs = build_runs(detections, max_speed_px_per_frame, max_gap_frames=gap_frames)
-    min_len = max(min_run, int(round(min_run_s * fps)))
+        runs = build_runs(detections, max_speed_px_per_frame, max_gap_frames=gap_frames, sample_stride=base_gap)
+    min_len = max(min_run, int(round(min_run_s * fps)))  # frames of duration a run needs to stand alone
     link = max(1, int(round(link_s * fps)))
     lone_link = max(1, int(round(lone_link_s * fps)))
     blip_frames = int(round(blip_max_s * fps))
@@ -482,7 +532,8 @@ def reject_velocity_outliers(
         return still >= stutter_frac * (len(run) - 1)
 
     def is_long(run: list[BallDetection]) -> bool:
-        return len(run) >= min_len and not is_blip(run)
+        span = run[-1].frame_index - run[0].frame_index + base_gap
+        return len(run) >= min_run and span >= min_len and not is_blip(run)
 
     def end_speed(run: list[BallDetection], head: bool) -> float:
         if len(run) < 2:
@@ -612,6 +663,7 @@ def reject_stationary_detections(
     fps: float | None = None,
     window_s: float = 1.0,
     min_fill: float = 0.8,
+    sample_stride: int = 1,
 ) -> list[BallDetection | None]:
     """Reject detections that sit still (a ball on the ground, a logo).
 
@@ -634,7 +686,7 @@ def reject_stationary_detections(
     if float(np.std(xs)) < std_threshold and float(np.std(ys)) < std_threshold:
         return [None for _ in detections]
     half = window // 2
-    min_count = max(3, int(min_fill * window)) if fps else 3
+    min_count = max(3, int(min_fill * window / max(1, sample_stride))) if fps else 3  # a sub-sampled run has fewer samples per second
     for i, det in enumerate(detections):
         if det is None:
             continue
@@ -675,6 +727,7 @@ def postprocess_trajectory(
     homography: np.ndarray | None = None,
     frame_shape: tuple[int, ...] | None = None,
     min_run_s: float = 0.12,
+    sample_stride: int = 1,
 ) -> BallTrajectory:
     """Court gate -> static spots -> outlier/tracklet rejection -> gap interpolation -> smoothing.
 
@@ -687,6 +740,7 @@ def postprocess_trajectory(
     blip_px = 0.03 * float(np.hypot(frame_shape[1], frame_shape[0])) if frame_shape else 40.0
     filtered = reject_velocity_outliers(
         gated, fps, max_speed_px_per_frame=per_frame_speed, min_run_s=min_run_s, blip_extent_px=blip_px,
+        sample_stride=sample_stride,
     )
     interpolated = interpolate_gaps(filtered, fps, max_gap_s, max_speed_px_per_frame=per_frame_speed)
     smoothed = smooth_trajectory(interpolated, window=smooth_window)
@@ -699,6 +753,7 @@ def finalize_ball_by_frame(
     stationary_std_px: float = 3.0,
     strong_confidence: float = 0.75,
     fps: float = 30.0,
+    sample_stride: int = 1,
 ) -> dict[int, BallDetection | None]:
     """Stationary rejection + edge trimming, returning a per-frame lookup."""
     raw_dets: list[BallDetection | None] = [None] * (segment.end_frame - segment.start_frame + 1)
@@ -706,6 +761,6 @@ def finalize_ball_by_frame(
         idx = det.frame_index - segment.start_frame
         if 0 <= idx < len(raw_dets):
             raw_dets[idx] = det
-    filtered = reject_stationary_detections(raw_dets, std_threshold=stationary_std_px, fps=fps)
+    filtered = reject_stationary_detections(raw_dets, std_threshold=stationary_std_px, fps=fps, sample_stride=sample_stride)
     filtered = trim_weak_edges(filtered, strong_confidence=strong_confidence)
     return {segment.start_frame + i: det for i, det in enumerate(filtered)}

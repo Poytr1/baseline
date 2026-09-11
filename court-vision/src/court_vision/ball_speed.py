@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from court_vision.player_detect import FrameTrackingResult
+from court_vision.types import FrameTrackingResult
 from court_vision.trajectory import map_ball_to_court
 
 _MIN_KMH = 20.0

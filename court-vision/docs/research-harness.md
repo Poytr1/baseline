@@ -234,6 +234,62 @@ positions are the ringed dots. The airborne ball is deliberately not
 drawn on that map — its ground projection is metres off, which is the
 whole reason the speed is taken between contact and bounce.
 
+## Performance (M2 Pro, MPS)
+
+Measured per frame with `research run` stage timings and a micro-benchmark:
+
+| stage | per frame | notes |
+|---|---|---|
+| ball, WASB HRNet | 104 ms | full-frame pass 60 ms + far-crop pass 44 ms, every frame; the forward pass itself is 35 ms and batching gains nothing on MPS |
+| players, YOLOv8s-pose | ~90 ms | 47 ms at imgsz 1280 + the far crop, every fps/30 frames |
+| everything else | < 10 ms | JPEG read 4 ms; court, scoreboard, hits, strokes negligible |
+
+That is about 6x real time for 30 fps footage and 9x for 60 fps: the 134 s
+reel takes 35–40 min, a single game of broadcast (3 min of play) 20–35
+min. A whole match needs a 10x that this Mac will not give; the levers,
+with what has been measured:
+
+- **Sub-sample 60 fps sources to 30 fps.** `ball_detect_stride: 2` halves
+  the ball stage (207 s → 102 s on houston28s) but, applied inside the
+  60 fps timeline, costs a hit (F1 1.0 → 0.92): the hit detector's windows
+  are frame-based and get half the samples. Off by default. The right
+  form is a 30 fps timeline end to end (sub-sample at ingest, map frame
+  indices back for rendering) — a follow-up.
+- **Gate the far-crop pass on the full frame** (`ball_far_crop_gate`):
+  saved nothing on broadcast clips (the far region covers most of the
+  frame's upper half, so the pass runs anyway) and is off by default.
+- **A small crop around the far player** instead of the whole far half:
+  no saving (the detector's cost is per pass, not per pixel) and the
+  different far-player boxes cost stroke accuracy (0.92 → 0.75); removed.
+- **Skip dead time** between points (40–50 % of a match's play segments):
+  a 5 fps ball pass to find the windows the ball moves in, then the full
+  pipeline only there. Not built yet; the biggest remaining lever for
+  full matches (~1.7x).
+- **Core ML / CUDA.** The Core ML export of WASB runs at 25 ms per window
+  on this Mac against 35 ms in PyTorch; a CUDA GPU (L4/A10/4090) runs both
+  detectors in 5–8 ms and batches, i.e. 10x+ over this machine.
+
+## Portability (an iOS port)
+
+The analysis layer — `types.py`, `trajectory.py`, `ball_speed.py`,
+`hit_detect.py`, `shot_classify.py`, `serialize.py`, `scene_filter.py`,
+`config.py` — is plain numpy. `tests/test_analysis_boundary.py` imports
+and runs it with `cv2`, `torch` and `ultralytics` blocked, so a model
+dependency cannot creep in. Its input contract is the per-frame JSON of
+`tracking_data.json` (ball, player boxes with court positions, pose
+keypoints) plus the court homography and the scoreboard timeline;
+`tests/fixtures/golden/` holds three such inputs with their expected
+shots, points and ball path (`tests/test_golden.py`), which is what a
+Swift implementation must reproduce.
+
+The perception half exports with `court-vision export-coreml`: WASB
+(input `(1, 9, 288, 512)`: three RGB frames resized to 512x288, /255,
+stacked oldest first; output the sigmoid heatmap), YOLOv8s-pose (raw head,
+NMS on device) and the court keypoint net. Verified on this machine: all
+three convert (coremltools 9, iOS 17 target); the ball detector's strongest
+blob agrees with PyTorch within 0.13 px over 8 real windows. Video
+decoding goes through AVAssetReader, scoreboard OCR through Apple Vision.
+
 ## Fixed cameras and other viewpoints
 
 Everything downstream of the court homography works in court metres, so a
