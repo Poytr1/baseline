@@ -23,3 +23,10 @@ clips:
     video: output/video.mp4
     frames_dir: output/frames_full
     notes: "Full Shelton v Zhang highlights reel (no GT yet; use scoreboard + review to label)"
+  sideview57s:
+    video: data/side_view/dji_export_20260816_222420_0.f_compose_0.mov
+    frames_dir: data/side_view/frames
+    calibration: research/calibrations/sideview57s.json   # fixed camera: court lines hand-calibrated on frame 1200
+    single_segment: true
+    overrides: {analysis_mode: rally, player_far_tiles: true, ball_candidates: 5}   # training rally: no serves/winners; tiled far crop finds the small far player; loose balls on court -> pick the path through 5 peaks
+    notes: "User's own DJI Osmo Pocket 3 clip, indoor hard court, low camera behind the near-right corner, 60 fps, 57 s (no GT)"

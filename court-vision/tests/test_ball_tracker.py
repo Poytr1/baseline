@@ -811,3 +811,118 @@ class TestShotSpeed:
         assert abs(est.kmh - 143.4) < 1.0
         assert bounce_speed((0.0, -12.0), (2.0, 7.9, 2), 0, 30.0) is None  # too short a flight
 
+
+class TestStaticSpots:
+    def test_balls_lying_on_the_court_are_removed_and_the_flight_survives(self):
+        from court_vision.trajectory import reject_static_spots
+
+        flight = _line(range(0, 200), x0=100.0, dx=4.0, y=300.0)          # a moving ball
+        # a ball on the ground the detector returns every other frame for 5 s
+        resting = [_det(f, 900.0 + (f % 3) * 0.5, 500.0) for f in range(0, 300, 2)]
+        kept = reject_static_spots(sorted(flight + resting, key=lambda d: d.frame_index), fps=60.0)
+        assert all(d.y == 300.0 for d in kept)
+        assert len(kept) == 200
+
+    def test_a_contact_zone_crossed_on_every_shot_is_not_a_static_spot(self):
+        from court_vision.trajectory import reject_static_spots
+
+        # the ball passes the same spot for 2 frames on each of 20 shots spread over a minute
+        crossings = [_det(180 * k + i, 700.0, 200.0) for k in range(20) for i in range(2)]
+        assert len(reject_static_spots(crossings, fps=60.0)) == 40
+
+    def test_a_short_pause_is_not_a_static_spot(self):
+        from court_vision.trajectory import reject_static_spots
+
+        pause = [_det(f, 500.0, 200.0) for f in range(0, 40)]            # 0.67 s in one place (toss apex, occlusion)
+        assert len(reject_static_spots(pause, fps=60.0)) == 40
+
+
+class TestInterleavedTracks:
+    def test_detector_flipping_between_two_balls_keeps_the_moving_one(self):
+        """Frame by frame the detector alternates between a flying ball and a
+        ball rolling slowly on the ground: both chains must survive as tracks
+        and the flight must not shatter into two-frame runs."""
+        flight = _line(range(0, 120), x0=100.0, dx=6.0, y=200.0)
+        roller = [_det(f, 900.0 + 0.5 * f, 600.0) for f in range(0, 120)]
+        alternating = [flight[f] if f % 2 == 0 else roller[f] for f in range(120)]
+        kept = reject_velocity_outliers(alternating, fps=60.0, max_speed_px_per_frame=75.0, min_run_s=0.12)
+        assert len([d for d in kept if d.y == 200.0]) == 60   # the flight survived intact
+        # the roller ran at the same time as the flight: one ball at a time, so it is dropped
+        assert all(d.y == 200.0 for d in kept)
+
+    def test_overlapping_tracks_leave_one_ball_per_frame(self):
+        from court_vision.trajectory import _resolve_overlaps
+
+        long = _line(range(0, 30), y=100.0)
+        short = _line(range(10, 20), y=500.0)       # same frames as part of the long one
+        kept = _resolve_overlaps([short, long], min_len=4)
+        assert len(kept) == 30 and all(d.y == 100.0 for d in kept)
+        # a track inside a hole of the long one is still inside its span: dropped, not interleaved
+        holey = _line(list(range(0, 10)) + list(range(20, 30)), y=100.0)
+        filler = _line(range(11, 19), y=500.0)
+        kept = _resolve_overlaps([filler, holey], min_len=4)
+        assert all(d.y == 100.0 for d in kept) and len(kept) == 20
+        # but a track after the span is kept
+        later = _line(range(40, 50), y=500.0)
+        assert len(_resolve_overlaps([later, holey], min_len=4)) == 30
+
+
+class TestSelectBallPath:
+    def _cands(self, frames, moving_conf=0.7, junk_conf=0.9, junk=True):
+        out = []
+        for f in range(frames):
+            c = [_det(f, 100.0 + 8.0 * f, 300.0, moving_conf)]           # the ball in play, 8 px/frame
+            if junk:
+                c.append(_det(f, 900.0, 500.0, junk_conf))                 # a ball on the ground, stronger blob
+            out.append(sorted(c, key=lambda d: -d.confidence))
+        return out
+
+    def test_moving_ball_beats_a_stronger_static_blob(self):
+        from court_vision.trajectory import select_ball_path
+
+        path = select_ball_path(self._cands(120), fps=60.0, max_speed_px_per_frame=75.0)
+        assert len(path) == 120
+        assert all(d.y == 300.0 for d in path)
+
+    def test_missing_frames_are_skipped_and_the_path_resumes(self):
+        from court_vision.trajectory import select_ball_path
+
+        cands = self._cands(60, junk=False)
+        for f in range(20, 26):
+            cands[f] = []                                                  # the detector lost the ball for 6 frames
+        path = select_ball_path(cands, fps=60.0, max_speed_px_per_frame=75.0)
+        assert [d.frame_index for d in path] == [f for f in range(60) if not 20 <= f < 26]
+
+    def test_restart_after_a_long_loss(self):
+        from court_vision.trajectory import select_ball_path
+
+        cands = self._cands(120, junk=False)
+        for f in range(40, 80):
+            cands[f] = []                                                  # lost for 40 frames (> max gap of 30)
+        path = select_ball_path(cands, fps=60.0, max_speed_px_per_frame=75.0)
+        assert len(path) == 80                                             # both halves kept
+
+    def test_a_drifting_blob_on_the_next_court_is_not_followed(self):
+        """Our ball crosses the patch of the picture where a ball on the next
+        court creeps along at 1 px/frame with a stronger blob: the path must
+        keep our ball's velocity, not hop onto the creeping one."""
+        from court_vision.trajectory import select_ball_path
+
+        cands = []
+        for f in range(90):
+            ours = _det(f, 1100.0 - 12.0 * f, 250.0, 0.65)          # 12 px/frame leftward through the middle
+            theirs = _det(f, 620.0 + 1.0 * f, 255.0, 0.9)            # creeping, stronger
+            c = [ours, theirs] if not 38 <= f < 44 else [theirs]    # ours missed for 6 frames as it passes
+            cands.append(sorted(c, key=lambda d: -d.confidence))
+        path = select_ball_path(cands, fps=60.0, max_speed_px_per_frame=75.0)
+        assert all(d.confidence == 0.65 for d in path), "hopped onto the creeping ball"
+        assert len(path) == 84
+
+    def test_a_jump_over_the_cap_is_not_followed(self):
+        from court_vision.trajectory import select_ball_path
+
+        cands = self._cands(40, junk=False)
+        cands[20] = [_det(20, 1200.0, 100.0, 0.95)]                       # one wild blob mid-flight
+        path = select_ball_path(cands, fps=60.0, max_speed_px_per_frame=75.0)
+        assert 20 not in [d.frame_index for d in path]
+        assert len(path) == 39

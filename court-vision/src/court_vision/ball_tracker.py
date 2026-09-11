@@ -17,7 +17,9 @@ from court_vision.trajectory import (  # noqa: F401
     interpolate_gaps,
     map_ball_to_court,
     postprocess_trajectory,
+    reject_static_spots,
     reject_stationary_detections,
+    select_ball_path,
     reject_velocity_outliers,
     smooth_trajectory,
     trim_weak_edges,
@@ -26,7 +28,8 @@ from court_vision.trajectory import (  # noqa: F401
 __all__ = [
     "BallDetection", "BallTrajectory", "build_trajectory", "detect_ball_sequence",
     "detect_ball_tracknet", "detect_ball_wasb", "far_ball_roi", "interpolate_gaps",
-    "map_ball_to_court", "postprocess_trajectory", "reject_stationary_detections",
+    "map_ball_to_court", "postprocess_trajectory", "reject_static_spots", "select_ball_path",
+    "reject_stationary_detections",
     "reject_velocity_outliers", "smooth_trajectory", "trim_weak_edges",
 ]
 
@@ -82,6 +85,85 @@ class _FrameWindow:
         while len(self._cache) > self.capacity:
             self._cache.popitem(last=False)
         return frame
+
+
+def detect_ball_candidates_wasb(
+    frames: list[np.ndarray],
+    frame_index: int,
+    **kwargs,
+) -> list[BallDetection]:
+    """Thin wrapper that lazily imports and delegates to wasb.detect_ball_candidates_wasb."""
+    from court_vision.wasb import detect_ball_candidates_wasb as _impl
+    return _impl(frames, frame_index, **kwargs)
+
+
+_CANDIDATE_DETECTOR_NAMES: dict[str, str] = {"wasb": "detect_ball_candidates_wasb"}
+
+
+def detect_ball_candidates_sequence(
+    frames_dir: Path,
+    start_frame: int,
+    end_frame: int,
+    method: str = "wasb",
+    confidence_threshold: float = 0.3,
+    frame_step: int = 1,
+    progress_callback: Callable[[int, int], None] | None = None,
+    far_roi: tuple[int, int, int, int] | None = None,
+    max_candidates: int = 5,
+    merge_px: float = 8.0,
+) -> list[list[BallDetection]]:
+    """Like :func:`detect_ball_sequence` but keeps up to ``max_candidates``
+    heatmap peaks per frame (strongest first), full frame and far crop
+    merged (a candidate within ``merge_px`` of another is the same blob;
+    the more confident copy stays). One entry per frame, possibly empty.
+    The trajectory stage then chooses the motion-consistent path
+    (:func:`court_vision.trajectory.select_ball_path`) — the way to track
+    the ball in play on a court with other balls lying around.
+    """
+    frames_dir = Path(frames_dir)
+    name = _CANDIDATE_DETECTOR_NAMES.get(method)
+    if name is not None:
+        detect_fn = globals()[name]
+    else:  # a detector without candidate output: its single detection is the only candidate
+        single = globals()[_DETECTOR_NAMES[method]]
+
+        def detect_fn(buffer, frame_index, confidence_threshold, max_candidates):
+            d = single(buffer, frame_index=frame_index, confidence_threshold=confidence_threshold)
+            return [] if d is None else [d]
+
+    step = max(1, int(frame_step))
+    window = _FrameWindow(frames_dir, capacity=2 * step + 2)
+    out: list[list[BallDetection]] = []
+    total = end_frame - start_frame + 1
+    for i in range(start_frame, end_frame + 1):
+        current = window.get(i)
+        if current is None:
+            out.append([])
+            continue
+
+        def prev(k: int) -> np.ndarray:
+            j = max(start_frame, i - k * step)
+            frame = window.get(j)
+            return current if frame is None else frame
+
+        buffer = [prev(2), prev(1), current]
+        cands = list(detect_fn(buffer, frame_index=i, confidence_threshold=confidence_threshold, max_candidates=max_candidates))
+        if far_roi is not None:
+            x1, y1, x2, y2 = far_roi
+            crop_buffer = [f[y1:y2, x1:x2] for f in buffer]
+            if crop_buffer[-1].size:
+                for c in detect_fn(crop_buffer, frame_index=i, confidence_threshold=confidence_threshold, max_candidates=max_candidates):
+                    c = BallDetection(frame_index=i, x=c.x + x1, y=c.y + y1, confidence=c.confidence)
+                    dup = next((k for k, o in enumerate(cands) if abs(o.x - c.x) <= merge_px and abs(o.y - c.y) <= merge_px), None)
+                    if dup is None:
+                        cands.append(c)
+                    elif c.confidence > cands[dup].confidence:
+                        cands[dup] = c
+        cands.sort(key=lambda d: -d.confidence)
+        out.append(cands[:max_candidates])
+        if progress_callback:
+            progress_callback(i - start_frame + 1, total)
+    return out
 
 
 def detect_ball_sequence(

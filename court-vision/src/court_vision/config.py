@@ -33,6 +33,7 @@ class PipelineSettings(BaseModel):
     ball_confidence_threshold: float = 0.3
     ball_frame_step: int | Literal["auto"] = "auto"  # temporal gap of the 3-frame window (auto = fps/30)
     ball_far_crop: bool = True  # second detector pass on an upscaled far-court crop
+    ball_candidates: int = 1  # >1: keep this many heatmap peaks per frame and pick the motion-consistent path (courts with loose balls)
     ball_max_speed_px: float = 150.0  # per 30fps-frame; scaled by fps
     ball_max_gap_s: float = 0.5
     ball_smooth_window: int = 3
@@ -46,6 +47,7 @@ class PipelineSettings(BaseModel):
     player_conf: float = 0.15
     player_detect_stride: int | Literal["auto"] = "auto"  # auto = fps/30
     player_far_crop: bool = True
+    player_far_tiles: bool = False  # tile a wide far crop (oblique/corner cameras) so the far player gets real zoom
     player_max_court_x: float = 7.0  # metres; candidates beyond this are not players
     player_max_court_y: float = 17.0
 
@@ -64,6 +66,9 @@ class PipelineSettings(BaseModel):
 
     # ── point segmentation within a gameplay segment ──
     point_split_gap_s: float = 4.0
+    # "match": points start with a serve and end with a winner/error; "rally":
+    # training exchanges — no serves, no winners, just shots, speeds, landings
+    analysis_mode: Literal["match", "rally"] = "match"
     point_pad_before_s: float = 1.0
     point_pad_after_s: float = 2.5
 
@@ -96,17 +101,17 @@ STAGE_PARAMS: dict[str, tuple[str, ...]] = {
     "ingest": ("target_resolution", "fps_override"),
     "scene": ("gameplay_threshold", "scene_filter_stride", "scene_smooth_window", "min_segment_s"),
     "court": ("court_method",),
-    "ball": ("ball_detection_method", "ball_confidence_threshold", "ball_frame_step", "ball_far_crop"),
+    "ball": ("ball_detection_method", "ball_confidence_threshold", "ball_frame_step", "ball_far_crop", "ball_candidates"),
     "ball_post": ("ball_max_speed_px", "ball_max_gap_s", "ball_smooth_window",
                   "ball_stationary_std_px", "ball_strong_confidence",
                   "ball_min_run_s"),
     "players": ("player_model", "player_imgsz", "player_conf", "player_detect_stride",
-                "player_far_crop", "player_max_court_x", "player_max_court_y"),
+                "player_far_crop", "player_far_tiles", "player_max_court_x", "player_max_court_y"),
     "scoreboard": ("scoreboard_sample_s",),
     "shots": ("contact_method", "contact_min_gap_s", "contact_player_margin",
               "contact_min_turn_deg", "contact_min_speed_px", "contact_min_speed_norm", "contact_swing_min",
               "contact_use_swing", "close_up_ratio", "proximity_threshold",
-              "min_frames_between_contacts", "point_split_gap_s", "point_pad_before_s",
+              "min_frames_between_contacts", "point_split_gap_s", "analysis_mode", "point_pad_before_s",
               "point_pad_after_s", "near_player_hand", "far_player_hand",
               "slice_lookback_s", "slice_drop_ratio", "slice_min_torso_px", "volley_max_court_y",
               "outcome_method"),

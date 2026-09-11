@@ -128,6 +128,9 @@ precision of our hit detector on an independent broadcast source.
 | `slice_drop_ratio` | 0.3 | racket wrist drop (torso lengths) over the look-back that marks a slice |
 | `outcome_method` | auto | scoreboard OCR first, then ball landing (in/out/net), else unknown |
 | `point_split_gap_s` | 4.0 | gap between hits that starts a new point inside one camera segment |
+| `ball_candidates` | 1 | >1 keeps this many heatmap peaks per frame and picks the motion-consistent path through them (dynamic programming: confidence minus motion cost, a discount for blobs that stand still); needed when loose balls lie on the court |
+| `player_far_tiles` | off | cut a wide far-court crop into overlapping tiles so the far player gets real zoom (oblique / corner cameras) |
+| `analysis_mode` | match | `match`: points start with a serve and end with a winner/error (scoreboard or landing); `rally`: training exchanges — no serves, no winners, just shots, speeds and landings, rendered as "Rally N" |
 
 ## Results (2026-09-08)
 
@@ -230,6 +233,73 @@ the first bounce (cross), joined for the latest shot. The live player
 positions are the ringed dots. The airborne ball is deliberately not
 drawn on that map — its ground projection is metres off, which is the
 whole reason the speed is taken between contact and bounce.
+
+## Fixed cameras and other viewpoints
+
+Everything downstream of the court homography works in court metres, so a
+clip from a phone or action camera on a tripod runs through the same
+pipeline once two things are handled, both set per clip in
+`research/clips.yaml`:
+
+- `single_segment: true` — a fixed camera has no cuts, so the whole video
+  is one gameplay segment; the broadcast-tuned scene filter is skipped.
+- `calibration: <json>` — the court keypoint network was trained on
+  broadcast frames and, on a low corner camera, locks onto the wrong court
+  (or the fence). The JSON holds a 3x3 `homography` (pixel → court metres,
+  near player at negative y), the `frame_size` it was computed on (it is
+  rescaled if the run resolution differs) and the pixel/court `points` it
+  came from. It replaces the court stage for every segment, is part of the
+  cache key, and is what `research render` draws.
+
+How the DJI clip (`sideview57s`, Osmo Pocket 3 at ~2 m behind the near-left
+corner, 60 fps) was calibrated, in case another camera needs it: white
+lines were masked (bright, low-saturation pixels next to court blue),
+merged Hough segments gave the singles sidelines, the near baseline and
+the near service line; the baseline's singles corners plus its centre
+mark fix the *across* vanishing point, the three sidelines the *along*
+one, and a DLT on those points plus the two vanishing points gives the
+homography from the near court alone. Verification is where it earns its
+keep: with no far-court point used, the far baseline was predicted within
+2–4 px of where it is painted, both net posts landed on the posts and the
+far player's feet mapped to the far baseline centre. The outer left line
+of that court is ~25 cm outside an ITF doubles line, which is why fitting
+the four outer corners had failed with 50–80 px residuals — always check
+the model against lines that were not used in the fit.
+
+The far player was also being missed on this clip (7 % of frames): the
+far-court crop for the pose detector spans most of the frame width from a
+corner camera, so the detector's `imgsz` gave it almost no zoom. Wide far
+crops are now cut into overlapping tiles of about half `imgsz` (narrow
+broadcast crops are unchanged), which finds the far player in every
+sampled frame. Set `overrides: {analysis_mode: rally}` on a training clip
+so nobody is asked to serve or win.
+
+Two more things a training session breaks that a broadcast never did.
+Loose balls lie on the court, and the single strongest heatmap peak keeps
+flipping between the ball in play and them — the raw track shattered into
+700 two-frame runs. `ball_candidates: 5` keeps the top blobs per frame and
+`select_ball_path` picks one path through them by dynamic programming
+before the usual cleaning: confidence, minus a motion cost that weighs
+the deviation from where the previous step's velocity predicted the ball
+far more than plain displacement, minus a discount for blobs that stand
+still for half a second on both sides of a frame (a ball in play passing
+a resting ball is near it on one side only). The velocity term is what
+stops the path hopping onto a ball on the next court while ours crosses
+the same patch of the picture — that ball is not moving the way ours was
+— and a step that breaks with the previous velocity (a hit, a bounce)
+leaves the velocity unknown rather than remembering the jump. And the far player, seen edge
+on, is a box a third as wide as it is tall, so the hit gate now grows a
+box sideways by the larger of its width and three quarters of its height
+(racket reach), and the "ball moves away from the hitter" test has a
+viewpoint-free form — the distance from the hitter's box growing — beside
+the image-depth and court-depth forms, which a low camera fools whenever
+the ball rises after contact.
+
+What still assumes a camera behind a baseline: `_IMG_SIGN` in hit
+detection (image y grows toward the near player), the far-court crops for
+the ball and pose detectors, and the near/far sign rule in the bounce
+detector. A camera at a corner or behind either baseline satisfies them; a
+true side-on camera does not yet.
 
 ## Trajectory cleaning
 

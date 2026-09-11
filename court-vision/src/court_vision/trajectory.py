@@ -117,6 +117,177 @@ def court_gate(
     return kept
 
 
+def select_ball_path(
+    candidates: list[list[BallDetection]],
+    fps: float,
+    max_speed_px_per_frame: float,
+    max_gap_frames: int | None = None,
+    skip_penalty: float = 0.1,
+    jump_weight: float = 1.5,
+    restart_penalty: float = 3.0,
+    static_penalty: float = 0.8,
+    static_window_s: float = 0.5,
+    static_min_frac: float = 0.5,
+    static_px: float = 8.0,
+    velocity_weight: float = 0.85,
+) -> list[BallDetection]:
+    """One detection per frame (or none) through per-frame candidates: the
+    path that maximises confidence minus motion cost.
+
+    Scoring, summed along the path: each chosen candidate adds its
+    confidence, less ``static_penalty`` if a candidate stands within
+    ``static_px`` of the same spot for most of ``static_window_s`` around
+    it (a ball on the ground, not the ball in play — the smoothest path of
+    all would otherwise be to sit on it). A step between chosen candidates
+    ``g`` frames apart costs ``jump_weight`` times a blend of its speed and,
+    weighted ``velocity_weight``, its deviation from where the previous
+    step's velocity predicted the ball — both as fractions of the cap —
+    plus ``skip_penalty`` per skipped frame; steps over the cap are not
+    allowed. A longer silence, or a jump the cap forbids, costs
+    ``restart_penalty`` instead. The velocity term is what keeps the path
+    from hopping onto a ball on the next court while ours crosses the same
+    patch of the picture: that ball is not moving the way ours was.
+    Solved by dynamic programming (the velocity of a state is the one its
+    own best predecessor gave it); the winner is the ball in play because
+    it is the only thing that both keeps being detected and moves like a
+    ball.
+    """
+    frames = [i for i, c in enumerate(candidates) if c]
+    if not frames:
+        return []
+    gap = max_gap_frames if max_gap_frames is not None else max(2, int(round(fps / 2.0)))
+    win = max(1, int(round(static_window_s * fps)))
+    # emissions, with the static discount
+    emit: dict[int, np.ndarray] = {}
+    pos: dict[int, np.ndarray] = {}
+    for i in frames:
+        pts = np.array([(d.x, d.y) for d in candidates[i]], dtype=np.float64)
+        conf = np.array([d.confidence for d in candidates[i]], dtype=np.float64)
+        # a candidate that has been (or will be) on the same pixels for most of
+        # a window is standing still: look both ways so the discount also
+        # applies at the start of a clip, before the path has any history
+        # ... and on both sides: a ball in play that passes a resting ball is
+        # near it only on one side of the crossing, the resting ball on both
+        before = [np.array([(d.x, d.y) for d in candidates[k]]) for k in range(max(0, i - win), i) if candidates[k]]
+        after = [np.array([(d.x, d.y) for d in candidates[k]]) for k in range(i + 1, min(len(candidates), i + win + 1)) if candidates[k]]
+        need = static_min_frac * win / 2.0
+        for j in range(len(pts)):
+            counts = []
+            for side, span in ((before, i), (after, len(candidates) - 1 - i)):
+                if span < win / 2.0:      # too close to the start/end of the clip to judge this side
+                    counts.append(need)
+                elif side:
+                    allp = np.vstack(side)
+                    counts.append(np.sum(np.all(np.abs(allp - pts[j]) <= static_px, axis=1)))
+                else:
+                    counts.append(0)
+            if min(counts) >= need:
+                conf[j] -= static_penalty
+        emit[i], pos[i] = conf, pts
+    # dynamic programming over (frame, candidate)
+    best: dict[int, np.ndarray] = {}
+    back: dict[int, list[tuple[int, int] | None]] = {}
+    vel: dict[int, np.ndarray] = {}   # velocity (px/frame) each state inherited from its best predecessor
+    run_max = -np.inf   # best score of any state so far (for restarts)
+    run_arg: tuple[int, int] | None = None
+    for i in frames:
+        n = len(pos[i])
+        score = np.full(n, -np.inf)
+        prev_state: list[tuple[int, int] | None] = [None] * n
+        v_new = np.zeros((n, 2))
+        # start fresh, or restart after a long loss / an illegal jump
+        base = 0.0 if run_arg is None else max(0.0, run_max - restart_penalty)
+        score[:] = base
+        prev_state = [run_arg if (run_arg is not None and run_max - restart_penalty >= 0.0) else None] * n
+        for k in frames_before(frames, i, gap):
+            g = i - k
+            delta = pos[i][:, None, :] - pos[k][None, :, :]                       # (n_i, n_k, 2)
+            d = np.linalg.norm(delta, axis=2) / g                                  # plain speed
+            dev = np.linalg.norm(delta - vel[k][None, :, :] * g, axis=2) / g       # deviation from the predicted spot
+            motion = (1.0 - velocity_weight) * d + velocity_weight * dev
+            cost = jump_weight * motion / max_speed_px_per_frame + skip_penalty * (g - 1)
+            cost[d > max_speed_px_per_frame] = np.inf
+            cand = best[k][None, :] - cost  # (n_i, n_k)
+            kbest = np.argmax(cand, axis=1)
+            for j in range(n):
+                v = cand[j, kbest[j]]
+                if v > score[j]:
+                    score[j] = v
+                    prev_state[j] = (k, int(kbest[j]))
+                    # a step that broke with the previous velocity (a hit, a
+                    # bounce, a hop between objects) leaves the velocity
+                    # unknown rather than remembering the jump
+                    smooth = dev[j, kbest[j]] <= 0.25 * max_speed_px_per_frame
+                    v_new[j] = delta[j, kbest[j]] / g if smooth else 0.0
+        score = score + emit[i]
+        best[i] = score
+        back[i] = prev_state
+        vel[i] = v_new
+        j = int(np.argmax(score))
+        if score[j] > run_max:
+            run_max, run_arg = float(score[j]), (i, j)
+    # backtrack from the best state
+    chosen: list[BallDetection] = []
+    state = run_arg
+    while state is not None:
+        i, j = state
+        chosen.append(candidates[i][j])
+        state = back[i][j]
+    chosen.reverse()
+    return chosen
+
+
+def frames_before(frames: list[int], i: int, gap: int) -> list[int]:
+    """Frames in ``frames`` within ``gap`` before ``i`` (``frames`` sorted)."""
+    import bisect
+    lo = bisect.bisect_left(frames, i - gap)
+    hi = bisect.bisect_left(frames, i)
+    return frames[lo:hi]
+
+
+def reject_static_spots(
+    detections: list[BallDetection],
+    fps: float,
+    cell_px: float = 6.0,
+    min_span_s: float = 3.0,
+    min_count: int = 30,
+) -> list[BallDetection]:
+    """Drop detections that sit on a spot the detector keeps returning to.
+
+    A single-peak ball detector on a court with loose balls lying around
+    (a training session) flips between the moving ball and the still ones
+    frame by frame, and the track shatters into hundreds of two-frame runs.
+    A rally ball never rests on one pixel cell for ``min_span_s``; a ball on
+    the ground, a logo or a lamp does. A cell (with its 8 neighbours) that
+    is seen over at least ``min_span_s`` and collects at least ``min_count``
+    detections inside some window of that length is a static spot and every
+    detection in it goes (a
+    flight through the cell loses a frame or two). Counting inside a window
+    rather than over the whole clip keeps a contact zone the ball crosses on
+    every shot — many hits, spread out in time — from being mistaken for one.
+    """
+    if len(detections) < min_count:
+        return list(detections)
+    cells: dict[tuple[int, int], list[int]] = {}
+    for d in detections:
+        cells.setdefault((int(d.x // cell_px), int(d.y // cell_px)), []).append(d.frame_index)
+    span = min_span_s * fps
+    static = set()
+    for cell in cells:
+        frames_all = sorted(f for dx in (-1, 0, 1) for dy in (-1, 0, 1) for f in cells.get((cell[0] + dx, cell[1] + dy), []))
+        if len(frames_all) < min_count or frames_all[-1] - frames_all[0] < span:
+            continue  # too few, or not around for long enough (a pause, a toss apex)
+        # densest window: does any stretch of min_span_s hold min_count detections?
+        j = 0
+        for i in range(len(frames_all)):
+            while frames_all[i] - frames_all[j] > span:
+                j += 1
+            if i - j + 1 >= min_count:
+                static.add(cell)
+                break
+    return [d for d in detections if (int(d.x // cell_px), int(d.y // cell_px)) not in static]
+
+
 # ── 2. runs + tracklet linking ───────────────────────────────────────────────
 
 def _speed(a: BallDetection, b: BallDetection) -> float:
@@ -166,6 +337,65 @@ def build_runs(
     return runs
 
 
+def build_tracks(
+    detections: list[BallDetection],
+    max_speed_px_per_frame: float,
+    max_gap_frames: int,
+    gap_speed_ratio: float = 4.0,
+    gap_speed_floor: float = 3.0,
+) -> list[list[BallDetection]]:
+    """Like :func:`build_runs`, but several tracks may be open at once.
+
+    A single-peak detector on a court with more than one ball flips between
+    them frame by frame; chaining each detection onto the *last* one then
+    shatters every track. Here a detection joins the open track whose last
+    point it can reach at a legal speed (the closest such track), so the
+    moving ball's samples chain together across the frames the detector
+    spent on something else, and that something else forms its own track.
+    Tracks are returned in order of their first frame.
+    """
+    tracks: list[list[BallDetection]] = []
+    for det in detections:
+        best, best_step = None, None
+        for tr in tracks:
+            prev = tr[-1]
+            gap = det.frame_index - prev.frame_index
+            if gap <= 0 or gap > max_gap_frames:
+                continue
+            step = _speed(prev, det)
+            if step > max_speed_px_per_frame:
+                continue
+            if gap >= 2 and len(tr) >= 2:
+                local = _speed(tr[-2], prev)
+                if step > gap_speed_ratio * max(local, gap_speed_floor):
+                    continue
+            if best is None or step < best_step:
+                best, best_step = tr, step
+        if best is None:
+            tracks.append([det])
+        else:
+            best.append(det)
+    return sorted(tracks, key=lambda tr: tr[0].frame_index)
+
+
+def _resolve_overlaps(tracks: list[list[BallDetection]], min_len: int) -> list[BallDetection]:
+    """One ball at a time: longer tracks win and reserve their whole time
+    span, so a shorter track may only contribute frames outside every
+    accepted span (and is dropped if too little is left). Reserving the
+    span, not just the frames, matters: a junk track that fills the holes
+    of the real one would otherwise interleave with it frame by frame and
+    the result would zigzag between two objects."""
+    spans: list[tuple[int, int]] = []
+    kept: list[BallDetection] = []
+    for tr in sorted(tracks, key=len, reverse=True):
+        rest = [d for d in tr if not any(a <= d.frame_index <= b for a, b in spans)]
+        if len(rest) < min(min_len, len(tr)):
+            continue
+        kept.extend(rest)
+        spans.append((rest[0].frame_index, rest[-1].frame_index))
+    return sorted(kept, key=lambda d: d.frame_index)
+
+
 def reject_velocity_outliers(
     detections: list[BallDetection],
     fps: float,
@@ -180,10 +410,12 @@ def reject_velocity_outliers(
     blip_max_s: float = 1.0,
     stutter_px: float = 1.5,
     stutter_frac: float = 0.4,
+    alternation_frac: float = 0.05,
 ) -> list[BallDetection]:
     """Keep the ball's track and drop the blips.
 
-    Detections are grouped into runs (see :func:`build_runs`). A run is
+    Detections are grouped into runs (see :func:`build_runs`, or
+    :func:`build_tracks` when several balls are in view). A run is
     *long* if it has at least ``min_run`` detections and spans at least
     ``min_run_s``. Long runs are kept — unless they are a *blip*: shorter
     than ``blip_max_s`` and either moving less than ``blip_extent_px``
@@ -212,13 +444,26 @@ def reject_velocity_outliers(
         blip_max_s: Runs at least this long are judged by the stationary filter instead.
         stutter_px: A step shorter than this counts as standing still.
         stutter_frac: A run shorter than ``blip_max_s`` standing still this often is dropped.
+        alternation_frac: When more than this fraction of consecutive steps break the cap
+            (several balls in view), detections are grouped with :func:`build_tracks`.
     """
     if len(detections) < 2:
         return list(detections)
     # A gap longer than ~a third of a second also ends a run, so that a ball
     # re-appearing after an occlusion is a separate tracklet that has to
     # *earn* its link (speed-consistent bridge) instead of being glued on.
-    runs = build_runs(detections, max_speed_px_per_frame, max_gap_frames=max(2, int(round(fps / 2.0))))
+    # With one ball in play the detector's single peak chains frame to frame
+    # and the plain runs are right (and validated). When it keeps flipping
+    # between several balls, most consecutive steps break the speed cap;
+    # then let several tracks stay open at once and sort them out after.
+    gap_frames = max(2, int(round(fps / 2.0)))
+    steps = [_speed(a, b) for a, b in zip(detections, detections[1:]) if b.frame_index - a.frame_index == 1]
+    violations = sum(1 for v in steps if v > max_speed_px_per_frame)
+    alternating = violations >= 20 and violations > alternation_frac * len(steps)
+    if alternating:
+        runs = build_tracks(detections, max_speed_px_per_frame, max_gap_frames=gap_frames)
+    else:
+        runs = build_runs(detections, max_speed_px_per_frame, max_gap_frames=gap_frames)
     min_len = max(min_run, int(round(min_run_s * fps)))
     link = max(1, int(round(link_s * fps)))
     lone_link = max(1, int(round(lone_link_s * fps)))
@@ -272,11 +517,10 @@ def reject_velocity_outliers(
             if prev_ok or next_ok:
                 keep[i] = True
                 changed = True
-    kept: list[BallDetection] = []
-    for i, run in enumerate(runs):
-        if keep[i]:
-            kept.extend(run)
-    return kept
+    kept_runs = [run for i, run in enumerate(runs) if keep[i]]
+    if alternating:
+        return _resolve_overlaps(kept_runs, min_len)
+    return [d for run in kept_runs for d in run]
 
 
 # ── 3. gaps, smoothing, stationary, edges ────────────────────────────────────
@@ -432,14 +676,14 @@ def postprocess_trajectory(
     frame_shape: tuple[int, ...] | None = None,
     min_run_s: float = 0.12,
 ) -> BallTrajectory:
-    """Court gate -> outlier/tracklet rejection -> gap interpolation -> smoothing.
+    """Court gate -> static spots -> outlier/tracklet rejection -> gap interpolation -> smoothing.
 
     ``max_speed_px`` is per *30fps* frame and is scaled by the actual fps.
     ``min_run_s`` is the shortest run that can stand on its own (see
     :func:`reject_velocity_outliers`).
     """
     per_frame_speed = max_speed_px * 30.0 / max(fps, 1.0)
-    gated = court_gate(raw_detections, homography, frame_shape)
+    gated = reject_static_spots(court_gate(raw_detections, homography, frame_shape), fps)
     blip_px = 0.03 * float(np.hypot(frame_shape[1], frame_shape[0])) if frame_shape else 40.0
     filtered = reject_velocity_outliers(
         gated, fps, max_speed_px_per_frame=per_frame_speed, min_run_s=min_run_s, blip_extent_px=blip_px,

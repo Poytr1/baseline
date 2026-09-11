@@ -214,29 +214,63 @@ def detect_persons_with_far_crop(
     imgsz: int = 1280,
     conf: float = 0.15,
     far_crop: bool = True,
+    far_tiles: bool = False,
 ) -> list[PersonCandidate]:
-    """Full-frame detection plus an upscaled far-court crop; merged by IoU."""
+    """Full-frame detection plus an upscaled far-court crop; merged by IoU.
+    With ``far_tiles`` a wide crop is cut into overlapping tiles (see
+    :func:`far_crop_tiles`)."""
     cands = detect_persons(frame, model_name=model_name, imgsz=imgsz, conf=conf)
     roi = far_court_roi(homography, frame.shape) if (far_crop and homography is not None) else None
     if roi is None:
         return cands
     x1, y1, x2, y2 = roi
-    crop = frame[y1:y2, x1:x2]
-    scale = min(4.0, max(1.0, imgsz / max(crop.shape[1], 1)))
-    if scale > 1.05:
-        crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    crop_cands = detect_persons(crop, model_name=model_name, imgsz=imgsz, conf=conf)
     mapped: list[PersonCandidate] = []
-    for c in crop_cands:
-        bx1, by1, bx2, by2 = c.bbox
-        bbox = (bx1 / scale + x1, by1 / scale + y1, bx2 / scale + x1, by2 / scale + y1)
-        kps = {k: (v[0] / scale + x1, v[1] / scale + y1, v[2]) for k, v in c.keypoints.items()}
-        mapped.append(PersonCandidate(bbox=bbox, confidence=c.confidence, keypoints=kps))
+    for tx1, tx2 in (far_crop_tiles(x1, x2, imgsz) if far_tiles else [(x1, x2)]):
+        crop = frame[y1:y2, tx1:tx2]
+        scale = min(4.0, max(1.0, imgsz / max(crop.shape[1], 1)))
+        if scale > 1.05:
+            crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        for c in detect_persons(crop, model_name=model_name, imgsz=imgsz, conf=conf):
+            bx1, by1, bx2, by2 = c.bbox
+            bbox = (bx1 / scale + tx1, by1 / scale + y1, bx2 / scale + tx1, by2 / scale + y1)
+            kps = {k: (v[0] / scale + tx1, v[1] / scale + y1, v[2]) for k, v in c.keypoints.items()}
+            cand = PersonCandidate(bbox=bbox, confidence=c.confidence, keypoints=kps)
+            # the same person seen in two overlapping tiles: keep the more confident one
+            dup = next((m for m in mapped if _iou(m.bbox, bbox) >= 0.5), None)
+            if dup is None:
+                mapped.append(cand)
+            elif cand.confidence > dup.confidence:
+                mapped[mapped.index(dup)] = cand
     merged: list[PersonCandidate] = list(mapped)
     for c in cands:
         if all(_iou(c.bbox, m.bbox) < 0.5 for m in mapped):
             merged.append(c)
     return merged
+
+
+def far_crop_tiles(x1: int, x2: int, imgsz: int, max_fraction: float = 0.6, overlap: float = 0.2) -> list[tuple[int, int]]:
+    """Split a wide far-court ROI into overlapping tiles so each can be
+    upscaled properly.
+
+    The detector resizes a crop to ``imgsz`` on its long side, so a far
+    half that spans most of the frame (an oblique corner camera) gets
+    almost no zoom and a 60 px player is missed. A ROI narrower than
+    ``max_fraction`` of ``imgsz`` stays one tile (broadcast framing is
+    unchanged); wider ones are cut into tiles of about half ``imgsz``
+    with ``overlap`` shared between neighbours.
+    """
+    width = x2 - x1
+    if width <= max_fraction * imgsz:
+        return [(x1, x2)]
+    n = int(np.ceil(width / (0.5 * imgsz)))
+    step = width / n
+    tile = step * (1.0 + overlap)
+    tiles = []
+    for i in range(n):
+        tx1 = int(round(x1 + i * step - (tile - step) / 2))
+        tx2 = int(round(tx1 + tile))
+        tiles.append((max(x1, tx1), min(x2, tx2)))
+    return tiles
 
 
 # ── Court-aware role tracker ─────────────────────────────────────────────────
@@ -402,6 +436,7 @@ def detect_players_segment(
     imgsz: int = 1280,
     conf: float = 0.15,
     far_crop: bool = True,
+    far_tiles: bool = False,
     max_court_x: float = 7.0,
     max_court_y: float = 17.0,
 ) -> list[FrameTrackingResult]:
@@ -426,7 +461,7 @@ def detect_players_segment(
         offset = frame_idx - segment.start_frame
         if offset % player_detect_stride == 0:
             candidates = detect_persons_with_far_crop(
-                frame, homography, model_name=model_name, imgsz=imgsz, conf=conf, far_crop=far_crop,
+                frame, homography, model_name=model_name, imgsz=imgsz, conf=conf, far_crop=far_crop, far_tiles=far_tiles,
             )
             players, poses = tracker.update(frame_idx, candidates)
             last_players, last_poses = players, poses

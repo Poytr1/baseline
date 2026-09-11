@@ -109,7 +109,11 @@ class TestDetectHitsTrajectory:
     def test_turn_threshold_is_respected(self):
         ys = _near_hit_ys()
         tracking = [_frame(i, (550.0, ys[i]), _both(i)) for i in range(21)]
-        assert detect_hits(tracking, FPS, min_turn_deg=181.0, use_swing=False) == []
+        hits = detect_hits(tracking, FPS, min_turn_deg=181.0, use_swing=False)
+        # the reversal at the near player cannot be a "turn" with an impossible
+        # threshold; the ball leaving the far player at frame 0 is a track start
+        assert all(h.kind != "turn" for h in hits)
+        assert all(h.role != "near_player" for h in hits)
 
     def test_empty_and_ball_less_tracking(self):
         assert detect_hits([], FPS) == []
@@ -190,7 +194,7 @@ class TestEnforceAlternation:
 class TestGeometryHelpers:
     def test_expanded_bbox(self):
         p = PlayerDetection(0, (100.0, 100.0, 200.0, 300.0), 0.9, role="near_player")
-        assert _expanded_bbox(p, 0.5) == (50.0, 0.0, 250.0, 400.0)
+        assert _expanded_bbox(p, 0.5) == (25.0, 0.0, 275.0, 400.0)  # sideways by max(width, 0.75 height)
         assert _expanded_bbox(p, 0.0) == p.bbox
 
     def test_dist_to_bbox(self):
@@ -208,3 +212,29 @@ class TestGeometryHelpers:
         assert role == "far_player"
         assert d > 0.0
         assert _nearest_player(_frame(0, None, []), 5.0, 5.0, margin=0.0) == (None, float("inf"))
+
+
+class TestOffscreenReturn:
+    def _frames(self, seen: dict[int, tuple[float, float] | None]):
+        from court_vision.ball_tracker import BallDetection
+        from court_vision.player_detect import FrameTrackingResult
+        return {f: FrameTrackingResult(f, None if xy is None else BallDetection(f, xy[0], xy[1], 0.9), [], []) for f, xy in seen.items()}
+
+    def test_ball_leaving_through_the_right_edge_gives_a_contact_mid_gap(self):
+        from court_vision.hit_detect import _offscreen_return
+
+        seen = {f: (900.0 + 30.0 * f, 300.0) for f in range(0, 12)}       # heading right, last seen at x=1230
+        seen.update({f: None for f in range(12, 30)})                       # gone for 18 frames
+        seen.update({f: (1200.0 - 25.0 * (f - 30), 310.0) for f in range(30, 40)})
+        got = _offscreen_return(0, 39, self._frames(seen), frame_shape=(1280, 720))
+        assert got is not None
+        _, frame, (x, _) = got
+        assert frame == (12 + 30) // 2 and x == 1230.0
+
+    def test_a_gap_in_mid_court_is_not_a_return(self):
+        from court_vision.hit_detect import _offscreen_return
+
+        seen = {f: (600.0, 300.0) for f in range(0, 10)}
+        seen.update({f: None for f in range(10, 30)})
+        seen.update({f: (620.0, 300.0) for f in range(30, 40)})
+        assert _offscreen_return(0, 39, self._frames(seen), frame_shape=(1280, 720)) is None
