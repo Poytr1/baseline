@@ -226,6 +226,8 @@ def run_clip(
                 confidence_threshold=p.ball_confidence_threshold,
                 frame_step=auto_stride(p.ball_frame_step, frame_seq.fps),
                 far_roi=ball_far_roi_for(court, i, shape, p.ball_far_crop),
+                detect_stride=auto_stride(p.ball_detect_stride, frame_seq.fps),
+                far_gate=p.ball_far_crop_gate,
             )
             if multi:
                 out.append(detect_ball_candidates_sequence(
@@ -262,16 +264,17 @@ def run_clip(
         H_seg = court[i].homography if (i < len(court) and court[i].success) else None
         if multi:
             raw = select_ball_path(raw, frame_seq.fps, p.ball_max_speed_px * 30.0 / max(frame_seq.fps, 1.0))
+        stride = auto_stride(p.ball_detect_stride, frame_seq.fps)
         traj = postprocess_trajectory(
             raw, frame_seq.fps, max_gap_s=p.ball_max_gap_s,
             max_speed_px=p.ball_max_speed_px, smooth_window=p.ball_smooth_window,
             homography=H_seg, frame_shape=(frame_seq.resolution[1], frame_seq.resolution[0]),
-            min_run_s=p.ball_min_run_s,
+            min_run_s=p.ball_min_run_s, sample_stride=stride,
         )
         ball.append(finalize_ball_by_frame(
             traj.detections, seg,
             stationary_std_px=p.ball_stationary_std_px, strong_confidence=p.ball_strong_confidence,
-            fps=frame_seq.fps,
+            fps=frame_seq.fps, sample_stride=stride,
         ))
 
     def compute_players():

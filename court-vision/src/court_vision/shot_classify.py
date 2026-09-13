@@ -10,10 +10,10 @@ from datetime import date
 import numpy as np
 
 from court_vision.ball_speed import bounce_speed
-from court_vision.ball_tracker import map_ball_to_court
+from court_vision.trajectory import map_ball_to_court
 from court_vision.config import PipelineSettings
 from court_vision.hit_detect import Hit, detect_hits
-from court_vision.player_detect import FrameTrackingResult, PlayerDetection, PoseKeypoints
+from court_vision.types import FrameTrackingResult, PlayerDetection, PoseKeypoints
 from court_vision.scene_filter import GameplaySegment
 from court_vision.scoreboard import ScoreTimeline, infer_point_winner_row
 

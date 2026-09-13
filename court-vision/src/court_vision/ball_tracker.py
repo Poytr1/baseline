@@ -111,6 +111,8 @@ def detect_ball_candidates_sequence(
     far_roi: tuple[int, int, int, int] | None = None,
     max_candidates: int = 5,
     merge_px: float = 8.0,
+    detect_stride: int = 1,
+    far_gate: bool = True,
 ) -> list[list[BallDetection]]:
     """Like :func:`detect_ball_sequence` but keeps up to ``max_candidates``
     heatmap peaks per frame (strongest first), full frame and far crop
@@ -132,10 +134,16 @@ def detect_ball_candidates_sequence(
             return [] if d is None else [d]
 
     step = max(1, int(frame_step))
+    stride = max(1, int(detect_stride))
     window = _FrameWindow(frames_dir, capacity=2 * step + 2)
     out: list[list[BallDetection]] = []
     total = end_frame - start_frame + 1
+    far_needed = True
+    last_best: BallDetection | None = None
     for i in range(start_frame, end_frame + 1):
+        if (i - start_frame) % stride:
+            out.append([])
+            continue
         current = window.get(i)
         if current is None:
             out.append([])
@@ -148,7 +156,11 @@ def detect_ball_candidates_sequence(
 
         buffer = [prev(2), prev(1), current]
         cands = list(detect_fn(buffer, frame_index=i, confidence_threshold=confidence_threshold, max_candidates=max_candidates))
-        if far_roi is not None:
+        if far_roi is not None and far_gate:
+            # the far pass is for a ball the full frame sees badly: skip it
+            # while the full frame tracks the ball confidently in the near court
+            far_needed = _far_pass_needed(cands[0] if cands else None, far_roi, last_best)
+        if far_roi is not None and (far_needed or not far_gate):
             x1, y1, x2, y2 = far_roi
             crop_buffer = [f[y1:y2, x1:x2] for f in buffer]
             if crop_buffer[-1].size:
@@ -161,6 +173,8 @@ def detect_ball_candidates_sequence(
                         cands[dup] = c
         cands.sort(key=lambda d: -d.confidence)
         out.append(cands[:max_candidates])
+        if cands:
+            last_best = cands[0]
         if progress_callback:
             progress_callback(i - start_frame + 1, total)
     return out
@@ -175,6 +189,8 @@ def detect_ball_sequence(
     frame_step: int = 1,
     progress_callback: Callable[[int, int], None] | None = None,
     far_roi: tuple[int, int, int, int] | None = None,
+    detect_stride: int = 1,
+    far_gate: bool = True,
 ) -> list[BallDetection]:
     """Run the neural ball detector over a frame range (raw detections only).
 
@@ -201,11 +217,16 @@ def detect_ball_sequence(
         raise ValueError(f"Unknown ball detection method {method!r}; expected one of {sorted(_DETECTOR_NAMES)}") from e
 
     step = max(1, int(frame_step))
+    stride = max(1, int(detect_stride))
     window = _FrameWindow(frames_dir, capacity=2 * step + 2)
     raw_detections: list[BallDetection] = []
     total = end_frame - start_frame + 1
+    far_needed = True
+    last_det: BallDetection | None = None
 
     for i in range(start_frame, end_frame + 1):
+        if (i - start_frame) % stride:
+            continue
         current = window.get(i)
         if current is None:
             continue
@@ -220,7 +241,9 @@ def detect_ball_sequence(
 
         buffer = [prev(2), prev(1), current]
         det = detect_fn(buffer, frame_index=i, confidence_threshold=confidence_threshold)
-        if far_roi is not None:
+        if far_roi is not None and far_gate:
+            far_needed = _far_pass_needed(det, far_roi, last_det)
+        if far_roi is not None and (far_needed or not far_gate):
             x1, y1, x2, y2 = far_roi
             crop_buffer = [f[y1:y2, x1:x2] for f in buffer]
             if crop_buffer[-1].size:
@@ -231,9 +254,45 @@ def detect_ball_sequence(
                         det = cdet
         if det is not None:
             raw_detections.append(det)
+            last_det = det
         if progress_callback:
             progress_callback(i - start_frame + 1, total)
     return raw_detections
+
+
+def _far_pass_needed(
+    best: BallDetection | None,
+    far_roi: tuple[int, int, int, int],
+    last: BallDetection | None = None,
+    strong: float = 0.5,
+    margin: int = 40,
+    max_jump_px_per_frame: float = 75.0,
+) -> bool:
+    """Whether the upscaled far-court pass is worth running for this frame.
+
+    It exists because a far-court ball is ~1.5 px to the downscaled full
+    frame. So: run it when the full frame found nothing, found something
+    weak, found the ball in or near the far region, or found something that
+    jumped from where the ball was last (a confident blob on a resting ball
+    while the real one is far away); skip it while the ball is tracked
+    confidently in the near court (about half the frames of a rally), which
+    is the single largest saving in the ball stage.
+    """
+    if best is None or best.confidence < strong:
+        return True
+    x1, y1, x2, y2 = far_roi
+    if (x1 - margin) <= best.x <= (x2 + margin) and (y1 - margin) <= best.y <= (y2 + margin):
+        return True
+    if last is None:
+        return True  # no track to trust yet
+    frames = max(1, best.frame_index - last.frame_index)
+    if np.hypot(best.x - last.x, best.y - last.y) / frames > max_jump_px_per_frame:
+        return True  # the full frame jumped onto something else
+    # the ball was last seen in the far region: it may still be there, hidden
+    # from the full frame, while the full frame returns a confident blob elsewhere
+    if (x1 - margin) <= last.x <= (x2 + margin) and (y1 - margin) <= last.y <= (y2 + margin):
+        return True
+    return False
 
 
 def far_ball_roi(homography: np.ndarray | None, frame_shape: tuple[int, ...]) -> tuple[int, int, int, int] | None:

@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Optional
 
+import json
 import typer
 
 app = typer.Typer(name="court-vision", help="Automated shot-by-shot tennis data from broadcast video.")
@@ -453,6 +454,18 @@ def dataset_eval_ball(
     if out:
         out.write_text(_json.dumps(ev.to_dict(), indent=1))
 
+
+
+@app.command("export-coreml")
+def export_coreml_cmd(
+    out_dir: Path = typer.Option(Path("models/coreml"), "--out", help="Where to write the .mlpackage files"),
+    frames_dir: Path | None = typer.Option(None, "--check-frames", help="A frames directory to verify the ball detector against PyTorch"),
+) -> None:
+    """Export the ball, pose and court models to Core ML (the perception half of an iOS port)."""
+    from court_vision.export_coreml import export_all
+
+    report = export_all(out_dir, frames_dir, log=typer.echo)
+    typer.echo(json.dumps(report, indent=1))
 
 @app.command()
 def version() -> None:

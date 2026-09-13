@@ -20,6 +20,7 @@ import numpy as np
 from court_vision.ball_tracker import BallDetection, build_trajectory
 from court_vision.trajectory import finalize_ball_by_frame  # noqa: F401  (re-exported)
 from court_vision.scene_filter import GameplaySegment
+from court_vision.types import FrameTrackingResult, PlayerDetection, PoseKeypoints  # noqa: F401  (re-exported)
 
 COCO_KEYPOINT_NAMES = [
     "nose", "left_eye", "right_eye", "left_ear", "right_ear",
@@ -32,36 +33,6 @@ _CACHE_DIR = Path.home() / ".cache" / "court-vision" / "models"
 _NEAR_BASELINE_Y = -11.885
 _FAR_BASELINE_Y = 11.885
 _DOUBLES_HALF = 5.485
-
-
-@dataclass
-class PlayerDetection:
-    """Single-frame player detection result."""
-
-    frame_index: int
-    bbox: tuple[float, float, float, float]  # (x1, y1, x2, y2) pixel coords
-    confidence: float
-    court_position: tuple[float, float] | None = None  # (x, y) meters
-    role: str | None = None  # "near_player" or "far_player"
-
-
-@dataclass
-class PoseKeypoints:
-    """Pose estimation result for a single player in a single frame."""
-
-    frame_index: int
-    role: str  # "near_player" or "far_player"
-    keypoints: dict[str, tuple[float, float, float]]  # name -> (x, y, visibility)
-
-
-@dataclass
-class FrameTrackingResult:
-    """Combined tracking result for a single frame."""
-
-    frame_index: int
-    ball: BallDetection | None
-    players: list[PlayerDetection]
-    poses: list[PoseKeypoints]
 
 
 @dataclass
@@ -218,7 +189,12 @@ def detect_persons_with_far_crop(
 ) -> list[PersonCandidate]:
     """Full-frame detection plus an upscaled far-court crop; merged by IoU.
     With ``far_tiles`` a wide crop is cut into overlapping tiles (see
-    :func:`far_crop_tiles`)."""
+    :func:`far_crop_tiles`).
+
+    A crop around the far player's last box was tried as a speed-up and
+    dropped: the detector's cost is per pass, not per pixel, so it saved
+    nothing, and the different far-player boxes cost stroke accuracy.
+    """
     cands = detect_persons(frame, model_name=model_name, imgsz=imgsz, conf=conf)
     roi = far_court_roi(homography, frame.shape) if (far_crop and homography is not None) else None
     if roi is None:

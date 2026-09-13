@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from court_vision.player_detect import FrameTrackingResult, PlayerDetection, PoseKeypoints
+from court_vision.types import FrameTrackingResult, PlayerDetection, PoseKeypoints
 
 
 @dataclass

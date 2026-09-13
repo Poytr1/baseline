@@ -59,8 +59,8 @@ class Scorecard:
     slice_recall: float = 0.0
     stroke_confusion: dict = field(default_factory=dict)  # gt -> pred -> count
     # stages (label-free)
-    ball_coverage: float = 0.0  # fraction of rally frames (inside predicted points) with a real (non-interpolated) ball
-    ball_coverage_any: float = 0.0
+    ball_coverage: float = 0.0  # fraction of rally frames (inside predicted points) with a ball (real or interpolated)
+    ball_coverage_real: float = 0.0  # ... with a real (non-interpolated) detection
     players_both_rate: float = 0.0
     court_success_rate: float = 0.0
     # stages (vs labels)
@@ -145,8 +145,10 @@ def score_run(
     spans = [(p.start_frame, p.end_frame) for p in pred.points] if pred.points else None
     rally = [t for t in tracking if spans is None or any(a <= t.frame_index <= b for a, b in spans)]
     if rally:
-        sc.ball_coverage = sum(1 for t in rally if t.ball is not None and not t.ball.interpolated) / len(rally)
-        sc.ball_coverage_any = sum(1 for t in rally if t.ball is not None) / len(rally)
+        # any ball (real or interpolated across a short gap): with the detector
+        # sub-sampled to 30 fps, "real" alone would halve on a 60 fps clip
+        sc.ball_coverage = sum(1 for t in rally if t.ball is not None) / len(rally)
+        sc.ball_coverage_real = sum(1 for t in rally if t.ball is not None and not t.ball.interpolated) / len(rally)
     if n_frames:
         sc.players_both_rate = sum(1 for t in tracking if len(t.players) == 2) / n_frames
     sc.court_success_rate = (sum(court_success) / len(court_success)) if court_success else 0.0
